@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <random>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,7 @@ public:
     RowHasher(std::size_t mPrime, std::size_t denseCols, std::size_t weight, std::uint64_t seed);
 
     RowData generate(const std::string& key) const;
+    RowData generate(std::span<const std::uint8_t> keyBytes) const;
 
     [[nodiscard]] std::size_t sparseSize() const { return mMPrime; }
     [[nodiscard]] std::size_t denseSize() const { return mDenseCols; }

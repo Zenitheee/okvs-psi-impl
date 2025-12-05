@@ -77,7 +77,7 @@ struct Poly256 {
             }
 
             uint64_t value = words[sourceIndex] << bitShift;
-        result.words[i] |= value;
+            result.words[i] |= value;
 
             if (bitShift != 0 && sourceIndex - 1 >= 0) {
                 uint64_t carry = words[sourceIndex - 1] >> (64 - bitShift);

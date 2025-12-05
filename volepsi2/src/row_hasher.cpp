@@ -29,16 +29,19 @@ std::vector<std::uint32_t> RowHasher::sampleDistinct(std::mt19937_64& rng, std::
     return result;
 }
 
-RowData RowHasher::generate(const std::string& key) const {
+namespace {
+
+std::vector<std::uint32_t> buildSeedMaterial(std::span<const std::uint8_t> keyBytes, std::uint64_t seed)
+{
     std::vector<std::uint32_t> seedMaterial;
-    seedMaterial.reserve(key.size() / 4 + 4);
-    seedMaterial.push_back(static_cast<std::uint32_t>(mSeed));
-    seedMaterial.push_back(static_cast<std::uint32_t>(mSeed >> 32));
+    seedMaterial.reserve(keyBytes.size() / 4 + 4);
+    seedMaterial.push_back(static_cast<std::uint32_t>(seed));
+    seedMaterial.push_back(static_cast<std::uint32_t>(seed >> 32));
 
     std::uint32_t acc = 0;
     int shift = 0;
-    for (unsigned char c : key) {
-        acc |= static_cast<std::uint32_t>(c) << shift;
+    for (auto byte : keyBytes) {
+        acc |= static_cast<std::uint32_t>(byte) << shift;
         shift += 8;
         if (shift == 32) {
             seedMaterial.push_back(acc);
@@ -52,6 +55,20 @@ RowData RowHasher::generate(const std::string& key) const {
     if (seedMaterial.empty()) {
         seedMaterial.push_back(0);
     }
+
+    return seedMaterial;
+}
+
+} // namespace
+
+RowData RowHasher::generate(const std::string& key) const {
+    const auto* data = key.empty() ? nullptr : key.data();
+    return generate(std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(data), key.size()));
+}
+
+RowData RowHasher::generate(std::span<const std::uint8_t> keyBytes) const {
+    auto seedMaterial = buildSeedMaterial(keyBytes, mSeed);
 
     std::seed_seq seq(seedMaterial.begin(), seedMaterial.end());
     std::mt19937_64 rng(seq);

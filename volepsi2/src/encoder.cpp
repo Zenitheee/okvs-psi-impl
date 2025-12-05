@@ -5,6 +5,7 @@
 #include <iostream>
 #include <numeric>
 #include <queue>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -22,7 +23,7 @@ struct TriangulationResult {
     std::vector<std::size_t> gapRows;
 };
 
-bool containsSparse(const RowData& row, std::size_t column) {
+[[maybe_unused]] bool containsSparse(const RowData& row, std::size_t column) {
     return std::binary_search(row.sparse.begin(), row.sparse.end(), column);
 }
 
@@ -212,7 +213,7 @@ struct RowOperation {
     GF128 factor;
 };
 
-void applyRowOperation(const RowOperation& op, Matrix& matrix) {
+[[maybe_unused]] void applyRowOperation(const RowOperation& op, Matrix& matrix) {
     if (matrix.empty()) {
         return;
     }
@@ -333,7 +334,7 @@ struct TransformedValues {
     std::vector<GF128> bottom;
 };
 
-TransformedValues transformValues(const std::vector<GF128>& values,
+TransformedValues transformValues(std::span<const GF128> values,
                                   const std::vector<std::size_t>& rowPermutation,
                                   const Matrix& X,
                                   const std::vector<RowOperation>& rowOps,
@@ -476,8 +477,8 @@ RowHasher OkvsEncoder::makeHasher(std::size_t numItems) const {
     return RowHasher(sparseSize(numItems), denseSize(numItems), mConfig.weight, mSeed);
 }
 
-OkvsEncoder::EncodedTable OkvsEncoder::encode(const std::vector<std::string>& keys,
-                                              const std::vector<GF128>& values) const {
+OkvsEncoder::EncodedTable OkvsEncoder::encode(std::span<const KeyView> keys,
+                                              std::span<const GF128> values) const {
     if (keys.size() != values.size()) {
         throw std::runtime_error("Mismatched key/value vector sizes.");
     }
@@ -491,7 +492,16 @@ OkvsEncoder::EncodedTable OkvsEncoder::encode(const std::vector<std::string>& ke
     std::vector<RowData> rows;
     rows.reserve(n);
     for (const auto& key : keys) {
-        rows.emplace_back(hasher.generate(key));
+        if (key.size > 0 && key.data == nullptr) {
+            throw std::runtime_error("KeyView points to null data.");
+        }
+        std::span<const std::uint8_t> keyBytes;
+        if (key.size == 0 || key.data == nullptr) {
+            keyBytes = {};
+        } else {
+            keyBytes = std::span<const std::uint8_t>(key.data, key.size);
+        }
+        rows.emplace_back(hasher.generate(keyBytes));
     }
 
     TriangulationResult tri = triangulateSparse(rows, sparse);
@@ -636,9 +646,36 @@ OkvsEncoder::EncodedTable OkvsEncoder::encode(const std::vector<std::string>& ke
     return table;
 }
 
-GF128 OkvsEncoder::decode(const std::string& key, const EncodedTable& table) const {
+OkvsEncoder::EncodedTable OkvsEncoder::encode(const std::vector<std::string>& keys,
+                                              const std::vector<GF128>& values) const {
+    std::vector<KeyView> views(keys.size());
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        const auto& key = keys[i];
+        const auto* data = key.empty() ? nullptr : key.data();
+        views[i] = KeyView{
+            reinterpret_cast<const std::uint8_t*>(data),
+            key.size()
+        };
+    }
+    return encode(std::span<const KeyView>(views.data(), views.size()),
+                  std::span<const GF128>(values.data(), values.size()));
+}
+
+GF128 OkvsEncoder::decode(KeyView key, const EncodedTableView& table) const {
     RowHasher hasher(table.sparseColumns, table.denseColumns, mConfig.weight, mSeed);
-    RowData row = hasher.generate(key);
+    if (key.size > 0 && key.data == nullptr) {
+        throw std::runtime_error("KeyView points to null data.");
+    }
+    std::span<const std::uint8_t> keyBytes;
+    if (key.size == 0 || key.data == nullptr) {
+        keyBytes = {};
+    } else {
+        keyBytes = std::span<const std::uint8_t>(key.data, key.size);
+    }
+    RowData row = hasher.generate(keyBytes);
+    if (table.data.size() < table.sparseColumns + table.denseColumns) {
+        throw std::runtime_error("Encoded table view smaller than expected.");
+    }
     GF128 acc = GF128::zero();
     for (auto idx : row.sparse) {
         if (idx >= table.sparseColumns) {
@@ -653,6 +690,22 @@ GF128 OkvsEncoder::decode(const std::string& key, const EncodedTable& table) con
         acc += row.dense[j] * table.data[table.sparseColumns + j];
     }
     return acc;
+}
+
+GF128 OkvsEncoder::decode(KeyView key, const EncodedTable& table) const {
+    return decode(key, EncodedTableView{
+        std::span<const GF128>(table.data),
+        table.sparseColumns,
+        table.denseColumns
+    });
+}
+
+GF128 OkvsEncoder::decode(const std::string& key, const EncodedTable& table) const {
+    const auto* data = key.empty() ? nullptr : key.data();
+    return decode(KeyView{
+        reinterpret_cast<const std::uint8_t*>(data),
+        key.size()
+    }, table);
 }
 
 } // namespace okvs
