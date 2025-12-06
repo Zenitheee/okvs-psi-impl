@@ -18,7 +18,7 @@ cmake --build build
 生成的目标：
 
 - `volepsi2_cli`：简单示例程序，生成随机键值对并验证编码/解码；
-- `volepsi2_tests`：随机用例测试，可通过 `ctest` 运行。
+- `volepsi2_tests`：位于 `tests/okvs_roundtrip.cpp` 的回归测试，覆盖多组规模，可通过 `ctest` 运行。
 
 ## 测试
 
@@ -47,10 +47,11 @@ auto decoded = encoder.decode("alice", table);
 
 - 稀疏列长度默认取 `ceil(1.23 * n)`，可通过 `OkvsConfig::explicitSparseSize` 覆盖；
 - 密集列数量默认等于 `securityParameter`，即论文中的 `λ`；
+- 稀疏三角化及 gap 回填流程复用了 Paxos 风格的 `FC^{-1}` 计算与 GF(2^128) 稠密回代，不再显式构造大矩阵；
 - 密集列采用 GF(2^128) 并构造 Vandermonde 行，以确保 `B'` 满秩的概率达到 “压倒性”。
 
 ## 后续工作
 
-- 精确实现论文中的三角化过程及 gap 处理；
+- 引入论文中的 clustering 优化与多线程并行；
 - 与原 `volepsi` 实现进行性能对比与联调。
 
