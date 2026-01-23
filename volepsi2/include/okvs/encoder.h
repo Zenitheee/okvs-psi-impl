@@ -45,12 +45,7 @@ public:
 
     [[nodiscard]] EncodedTable encode(std::span<const KeyView> keys,
                                       std::span<const GF128> values) const;
-    [[nodiscard]] EncodedTable encode(const std::vector<std::string>& keys,
-                                      const std::vector<GF128>& values) const;
-
     [[nodiscard]] GF128 decode(KeyView key, const EncodedTableView& table) const;
-    [[nodiscard]] GF128 decode(KeyView key, const EncodedTable& table) const;
-    [[nodiscard]] GF128 decode(const std::string& key, const EncodedTable& table) const;
 
     [[nodiscard]] std::size_t sparseSize(std::size_t numItems) const;
     [[nodiscard]] std::size_t denseSize(std::size_t numItems) const;

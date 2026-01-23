@@ -1,6 +1,6 @@
 #include "okvs/encoder.h"
 
-#include "okvs/paxos_like.h"
+#include "okvs/paxos.h"
 
 #include <algorithm>
 #include <span>
@@ -148,21 +148,6 @@ OkvsEncoder::EncodedTable OkvsEncoder::encode(std::span<const KeyView> keys,
     return table;
 }
 
-OkvsEncoder::EncodedTable OkvsEncoder::encode(const std::vector<std::string>& keys,
-                                              const std::vector<GF128>& values) const {
-    std::vector<KeyView> views(keys.size());
-    for (std::size_t i = 0; i < keys.size(); ++i) {
-        const auto& key = keys[i];
-        const auto* data = key.empty() ? nullptr : key.data();
-        views[i] = KeyView{
-            reinterpret_cast<const std::uint8_t*>(data),
-            key.size()
-        };
-    }
-    return encode(std::span<const KeyView>(views.data(), views.size()),
-                  std::span<const GF128>(values.data(), values.size()));
-}
-
 GF128 OkvsEncoder::decode(KeyView key, const EncodedTableView& table) const {
     RowHasher hasher(table.sparseColumns, table.denseColumns, mConfig.weight, mSeed);
     if (key.size > 0 && key.data == nullptr) {
@@ -193,22 +178,6 @@ GF128 OkvsEncoder::decode(KeyView key, const EncodedTableView& table) const {
         acc += row.dense[j] * table.data[table.sparseColumns + j];
     }
     return acc;
-}
-
-GF128 OkvsEncoder::decode(KeyView key, const EncodedTable& table) const {
-    return decode(key, EncodedTableView{
-        std::span<const GF128>(table.data),
-        table.sparseColumns,
-        table.denseColumns
-    });
-}
-
-GF128 OkvsEncoder::decode(const std::string& key, const EncodedTable& table) const {
-    const auto* data = key.empty() ? nullptr : key.data();
-    return decode(KeyView{
-        reinterpret_cast<const std::uint8_t*>(data),
-        key.size()
-    }, table);
 }
 
 } // namespace okvs

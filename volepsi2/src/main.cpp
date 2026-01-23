@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <random>
+#include <span>
 
 int main() {
     using namespace okvs;
@@ -23,11 +24,29 @@ int main() {
         values.emplace_back(GF128(hi, lo));
     }
 
-    auto table = encoder.encode(keys, values);
+    std::vector<KeyView> keyViews(keys.size());
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        const auto& key = keys[i];
+        const auto* data = key.empty() ? nullptr : key.data();
+        keyViews[i] = KeyView{
+            reinterpret_cast<const std::uint8_t*>(data),
+            key.size()
+        };
+    }
+
+    auto table = encoder.encode(
+        std::span<const KeyView>(keyViews.data(), keyViews.size()),
+        std::span<const GF128>(values.data(), values.size()));
+
+    OkvsEncoder::EncodedTableView tableView{
+        std::span<const GF128>(table.data),
+        table.sparseColumns,
+        table.denseColumns
+    };
 
     bool ok = true;
     for (std::size_t i = 0; i < n; ++i) {
-        auto recovered = encoder.decode(keys[i], table);
+        auto recovered = encoder.decode(keyViews[i], tableView);
         if (!(recovered == values[i])) {
             ok = false;
             std::cerr << "Mismatch at index " << i << " expected " << values[i]

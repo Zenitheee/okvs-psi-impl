@@ -1,4 +1,4 @@
-#include "okvs/paxos_like.h"
+#include "okvs/paxos.h"
 
 #include <algorithm>
 #include <limits>
@@ -128,22 +128,50 @@ TriangulationInfo triangulateRows(const std::vector<RowData>& rows, std::size_t 
         return result;
     }
 
-    std::vector<std::vector<std::size_t>> columnToRows(sparseColumns);
-    for (std::size_t r = 0; r < n; ++r) {
-        for (auto column : rows[r].sparse) {
-            if (column >= sparseColumns) {
-                throw std::runtime_error("Sparse column index out of range.");
-            }
-            columnToRows[column].push_back(r);
+    // Optimization: Use flat arrays instead of vector<vector> for columnToRows
+    // 1. Count weights
+    std::vector<std::size_t> colWeights(sparseColumns, 0);
+    for (const auto& row : rows) {
+        for (auto col : row.sparse) {
+             if (col < sparseColumns) {
+                 colWeights[col]++;
+             }
         }
     }
 
-    std::vector<std::size_t> currentWeight(sparseColumns, 0);
+    // 2. Compute offsets (CSR-like structure)
+    std::vector<std::size_t> colOffsets(sparseColumns + 1, 0);
+    std::size_t totalEntries = 0;
+    for (std::size_t i = 0; i < sparseColumns; ++i) {
+        colOffsets[i] = totalEntries;
+        totalEntries += colWeights[i];
+    }
+    colOffsets[sparseColumns] = totalEntries;
+
+    // 3. Fill the flat array
+    std::vector<std::size_t> colData(totalEntries);
+    std::vector<std::size_t> currentPos = colOffsets; // specific cursor for each col
+    
+    for (std::size_t r = 0; r < n; ++r) {
+        for (auto col : rows[r].sparse) {
+            if (col < sparseColumns) {
+                colData[currentPos[col]++] = r;
+            } else {
+                 throw std::runtime_error("Sparse column index out of range.");
+            }
+        }
+    }
+
+    // Access helper:
+    auto getRowsForCol = [&](std::size_t col) -> std::span<const std::size_t> {
+        return {&colData[colOffsets[col]], colWeights[col]}; // currentPos[col] should equal colOffsets[col+1] at end
+    };
+    
+    std::vector<std::size_t> currentWeight = colWeights; // Copy for mutation
     using HeapEntry = std::pair<std::size_t, std::size_t>;
     std::priority_queue<HeapEntry, std::vector<HeapEntry>, std::greater<HeapEntry>> heap;
 
     for (std::size_t col = 0; col < sparseColumns; ++col) {
-        currentWeight[col] = columnToRows[col].size();
         if (currentWeight[col] != 0) {
             heap.emplace(currentWeight[col], col);
         }
@@ -169,16 +197,21 @@ TriangulationInfo triangulateRows(const std::vector<RowData>& rows, std::size_t 
         auto [weight, column] = heap.top();
         heap.pop();
 
+        // Get rows for this column
+        auto rowsInCol = getRowsForCol(column);
         std::vector<std::size_t> activeRows;
         activeRows.reserve(weight);
-        for (auto rowIndex : columnToRows[column]) {
+        
+        for (auto rowIndex : rowsInCol) {
             if (rowActive[rowIndex]) {
                 activeRows.push_back(rowIndex);
             }
         }
 
         if (activeRows.empty()) {
-            continue;
+             // This column's rows were all removed already
+             currentWeight[column] = 0; // Ensure we don't pick it again
+             continue;
         }
 
         const std::size_t pivotRow = activeRows.front();
@@ -246,7 +279,7 @@ FCInverse buildFCInverse(const TriangulationInfo& tri,
             continue;
         }
 
-        std::set<std::size_t, std::greater<std::size_t>> active;
+        std::set<std::size_t, std::greater<std::size_t>> active;//当前 Gap 行中尚未被消除的、属于 $F$ 块的列的集合。存的是 mainColsReversed 里的下标）
         for (auto column : gapSparse) {
             if (column >= sparseColumns) {
                 throw std::runtime_error("Sparse column index out of range while building FCInv.");
@@ -278,10 +311,6 @@ FCInverse buildFCInverse(const TriangulationInfo& tri,
                 }
             }
 
-            auto diagIt = active.find(cCol);
-            if (diagIt != active.end()) {
-                active.erase(diagIt);
-            }
         }
     }
 

@@ -6,120 +6,11 @@
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+#include <wmmintrin.h>
+#include <emmintrin.h>
+#include <smmintrin.h> // For _mm_extract_epi64
 
 namespace okvs {
-
-namespace {
-
-struct Poly256 {
-    std::array<uint64_t, 4> words{};
-
-    Poly256() = default;
-    explicit Poly256(uint64_t value) { words[0] = value; }
-
-    static Poly256 fromGF128(const GF128& gf) {
-        Poly256 p;
-        p.words[0] = gf.lo();
-        p.words[1] = gf.hi();
-        return p;
-    }
-
-    static Poly256 modulus() {
-        Poly256 m;
-        m.words[0] = 0x87; // x^7 + x^2 + x + 1
-        m.words[2] = 0x1;   // x^128
-        return m;
-    }
-
-    [[nodiscard]] bool isZero() const {
-        return std::all_of(words.begin(), words.end(), [](uint64_t w) { return w == 0; });
-    }
-
-    [[nodiscard]] bool isOne() const {
-        return words[0] == 1 && words[1] == 0 && words[2] == 0 && words[3] == 0;
-    }
-
-    [[nodiscard]] int degree() const {
-        for (int i = 3; i >= 0; --i) {
-            if (words[i] != 0) {
-                return i * 64 + (63 - std::countl_zero(words[i]));
-            }
-        }
-        return -1;
-    }
-
-    [[nodiscard]] bool getBit(int idx) const {
-        int word = idx / 64;
-        int bit = idx % 64;
-        if (word < 0 || word >= static_cast<int>(words.size())) {
-            return false;
-        }
-        return (words[word] >> bit) & 1ULL;
-    }
-
-    [[nodiscard]] Poly256 shiftedLeft(int shift) const {
-        if (shift <= 0) {
-            return *this;
-        }
-
-        Poly256 result;
-        if (shift >= 256) {
-            return result;
-        }
-
-        int wordShift = shift / 64;
-        int bitShift = shift % 64;
-
-        for (int i = 3; i >= 0; --i) {
-            int sourceIndex = i - wordShift;
-            if (sourceIndex < 0) {
-                continue;
-            }
-
-            uint64_t value = words[sourceIndex] << bitShift;
-            result.words[i] |= value;
-
-            if (bitShift != 0 && sourceIndex - 1 >= 0) {
-                uint64_t carry = words[sourceIndex - 1] >> (64 - bitShift);
-            result.words[i] |= carry;
-            }
-        }
-
-        return result;
-    }
-
-    Poly256& operator^=(const Poly256& rhs) {
-        for (size_t i = 0; i < words.size(); ++i) {
-            words[i] ^= rhs.words[i];
-        }
-        return *this;
-    }
-
-    [[nodiscard]] Poly256 operator^(const Poly256& rhs) const {
-        Poly256 tmp(*this);
-        tmp ^= rhs;
-        return tmp;
-    }
-};
-
-Poly256 reduce(const Poly256& value) {
-    Poly256 result = value;
-    Poly256 mod = Poly256::modulus();
-    int deg = result.degree();
-    while (deg >= 128) {
-        int shift = deg - 128;
-        result ^= mod.shiftedLeft(shift);
-        deg = result.degree();
-    }
-    return result;
-}
-
-GF128 fromPoly(const Poly256& value) {
-    Poly256 reduced = reduce(value);
-    return GF128(reduced.words[1], reduced.words[0]);
-}
-
-} // namespace
 
 GF128 GF128::fromUint128(__uint128_t value) {
     GF128 out;
@@ -159,20 +50,39 @@ GF128& GF128::operator*=(const GF128& rhs) {
 }
 
 GF128 GF128::operator*(const GF128& rhs) const {
-    Poly256 a = Poly256::fromGF128(*this);
-    Poly256 accum;
+    __m128i a = _mm_set_epi64x(mWords[1], mWords[0]);
+    __m128i b = _mm_set_epi64x(rhs.mWords[1], rhs.mWords[0]);
 
-    const std::array<uint64_t, 2> rhsWords = {rhs.lo(), rhs.hi()};
-    for (int word = 0; word < 2; ++word) {
-        uint64_t current = rhsWords[word];
-        for (int bit = 0; bit < 64; ++bit) {
-            if ((current >> bit) & 1ULL) {
-                accum ^= a.shiftedLeft(word * 64 + bit);
-            }
-        }
-    }
+    // Polynomial multiplication: a * b
+    __m128i tmp0 = _mm_clmulepi64_si128(a, b, 0x00);
+    __m128i tmp1 = _mm_clmulepi64_si128(a, b, 0x10);
+    __m128i tmp2 = _mm_clmulepi64_si128(a, b, 0x01);
+    __m128i tmp3 = _mm_clmulepi64_si128(a, b, 0x11);
 
-    return fromPoly(accum);
+    __m128i t1 = _mm_xor_si128(tmp1, tmp2);
+    __m128i C_lo = _mm_xor_si128(tmp0, _mm_slli_si128(t1, 8));
+    __m128i C_hi = _mm_xor_si128(tmp3, _mm_srli_si128(t1, 8));
+
+    // Reduction mod x^128 + x^7 + x^2 + x + 1 (0x87)
+    __m128i P = _mm_set_epi64x(0, 0x87);
+
+    // H * P
+    __m128i H_mul_P_lo = _mm_clmulepi64_si128(C_hi, P, 0x00);
+    __m128i H_mul_P_hi = _mm_clmulepi64_si128(C_hi, P, 0x01);
+
+    __m128i T_lo = _mm_xor_si128(H_mul_P_lo, _mm_slli_si128(H_mul_P_hi, 8));
+    __m128i T_hi = _mm_srli_si128(H_mul_P_hi, 8); // This contains the overflow bits from H*P
+
+    // Reduce again
+    __m128i T_hi_mul_P = _mm_clmulepi64_si128(T_hi, P, 0x00);
+
+    __m128i res = _mm_xor_si128(C_lo, T_lo);
+    res = _mm_xor_si128(res, T_hi_mul_P);
+
+    GF128 out;
+    out.mWords[0] = _mm_cvtsi128_si64(res);
+    out.mWords[1] = _mm_extract_epi64(res, 1);
+    return out;
 }
 
 GF128 GF128::inverse() const {
@@ -180,27 +90,19 @@ GF128 GF128::inverse() const {
         throw std::runtime_error("GF128 inverse of zero is undefined");
     }
 
-    Poly256 u = Poly256::fromGF128(*this);
-    Poly256 v = Poly256::modulus();
-    Poly256 g1(1);
-    Poly256 g2;
-
-    while (!u.isOne()) {
-        int du = u.degree();
-        int dv = v.degree();
-
-        if (du < dv) {
-            std::swap(u, v);
-            std::swap(g1, g2);
-            std::swap(du, dv);
-        }
-
-        int shift = du - dv;
-        u ^= v.shiftedLeft(shift);
-        g1 ^= g2.shiftedLeft(shift);
+    // Inversion using Fermat's Little Theorem: a^(2^128 - 2)
+    // 2^128 - 2 = 11...110 (127 ones followed by a 0)
+    
+    GF128 res = *this;
+    // Compute res = base^(2^127 - 1)
+    for (int i = 0; i < 126; ++i) {
+        res = res * res;
+        res = res * (*this);
     }
+    // Final square to shift left (make it ...110)
+    res = res * res;
 
-    return fromPoly(g1);
+    return res;
 }
 
 std::array<std::uint8_t, 16> GF128::toBytes() const {
