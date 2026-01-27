@@ -33,6 +33,8 @@ public:
     GF128& operator-=(const GF128& rhs) { return (*this ^= rhs); }
     GF128 operator-(const GF128& rhs) const { return (*this ^ rhs); }
 
+    [[nodiscard]] GF128 square() const;
+
     GF128& operator*=(const GF128& rhs);
     GF128 operator*(const GF128& rhs) const;
 
