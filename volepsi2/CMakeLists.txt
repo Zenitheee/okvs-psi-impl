@@ -7,6 +7,7 @@ set(VOLEPSI2_SOURCES
     src/paxos.cpp
     src/encoder.cpp
     src/binned_encoder.cpp
+    src/psi.cpp
 )
 
 add_library(volepsi2 STATIC ${VOLEPSI2_SOURCES})
@@ -26,3 +27,6 @@ add_executable(gf128_square_test tests/gf128_square_test.cpp)
 target_link_libraries(gf128_square_test PRIVATE volepsi2)
 add_test(NAME gf128_square_test COMMAND gf128_square_test)
 
+add_executable(psi_test tests/psi_test.cpp)
+target_link_libraries(psi_test PRIVATE volepsi2)
+add_test(NAME psi_test COMMAND psi_test)

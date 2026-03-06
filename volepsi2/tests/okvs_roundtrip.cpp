@@ -23,7 +23,7 @@ int main() {
         values.reserve(n);
 
         for (std::size_t i = 0; i < n; ++i) {
-            keys.emplace_back("key-" + std::to_string(i));
+            keys.emplace_back("roundtrip-key-with-long-prefix-" + std::to_string(i));
             uint64_t lo = rng();
             uint64_t hi = rng();
             values.emplace_back(GF128(hi, lo));
@@ -67,5 +67,4 @@ int main() {
     std::cout << "OKVS round-trip tests passed.\n";
     return 0;
 }
-
 

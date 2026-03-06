@@ -1,11 +1,25 @@
 #include "okvs/encoder.h"
+#include "okvs/psi.h"
 
 #include <iostream>
 #include <random>
 #include <span>
+#include <string>
+#include <vector>
 
 int main() {
     using namespace okvs;
+
+    auto makeViews = [](const std::vector<std::string>& items) {
+        std::vector<KeyView> views(items.size());
+        for (std::size_t i = 0; i < items.size(); ++i) {
+            views[i] = KeyView{
+                reinterpret_cast<const std::uint8_t*>(items[i].data()),
+                items[i].size()
+            };
+        }
+        return views;
+    };
 
     OkvsConfig config;
     OkvsEncoder encoder(config, 0x1337'1145ULL);
@@ -62,6 +76,38 @@ int main() {
     std::cout << "OKVS encode/decode verified for n=" << n << ".\n";
     std::cout << "Sparse columns: " << table.sparseColumns
               << ", dense columns: " << table.denseColumns << '\n';
+
+    std::vector<std::string> receiverItems = {
+        "receiver-item-000000",
+        "receiver-item-000001",
+        "receiver-item-000002",
+        "receiver-item-000003"
+    };
+    std::vector<std::string> senderItems = {
+        "sender-item-000000",
+        "receiver-item-000001",
+        "sender-item-000002",
+        "receiver-item-000003"
+    };
+
+    PsiConfig psiConfig;
+    psiConfig.seed = 0xabcdef1234567890ULL;
+    SemiHonestPsi psi(psiConfig);
+
+    auto receiverViews = makeViews(receiverItems);
+    auto senderViews = makeViews(senderItems);
+    const auto psiResult = psi.run(
+        std::span<const KeyView>(receiverViews.data(), receiverViews.size()),
+        std::span<const KeyView>(senderViews.data(), senderViews.size()));
+
+    std::cout << "PSI intersection indices:";
+    for (auto idx : psiResult.intersectionIndices) {
+        std::cout << ' ' << idx;
+    }
+    std::cout << "\nPSI intersection values:";
+    for (auto idx : psiResult.intersectionIndices) {
+        std::cout << ' ' << receiverItems[idx];
+    }
+    std::cout << '\n';
     return 0;
 }
-

@@ -3,8 +3,11 @@
 #include "okvs/paxos.h"
 
 #include <algorithm>
+#include <atomic>
+#include <exception>
 #include <span>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 namespace okvs {
@@ -26,6 +29,42 @@ std::vector<RowData> buildRows(const RowHasher& hasher, std::span<const KeyView>
         rows.emplace_back(hasher.generate(keyBytes));
     }
     return rows;
+}
+
+GF128 decodeWithHasher(const RowHasher& hasher,
+                       KeyView key,
+                       std::span<const GF128> tableData,
+                       std::size_t sparseColumns,
+                       std::size_t denseColumns) {
+    if (key.size > 0 && key.data == nullptr) {
+        throw std::runtime_error("KeyView points to null data.");
+    }
+
+    std::span<const std::uint8_t> keyBytes;
+    if (key.size == 0 || key.data == nullptr) {
+        keyBytes = {};
+    } else {
+        keyBytes = std::span<const std::uint8_t>(key.data, key.size);
+    }
+
+    RowData row = hasher.generate(keyBytes);
+    GF128 acc = GF128::zero();
+
+    for (auto idx : row.sparse) {
+        if (idx >= sparseColumns) {
+            throw std::runtime_error("Sparse index out of range during decode.");
+        }
+        acc += tableData[idx];
+    }
+
+    for (std::size_t j = 0; j < row.dense.size(); ++j) {
+        if (j >= denseColumns) {
+            throw std::runtime_error("Dense index out of range during decode.");
+        }
+        acc += row.dense[j] * tableData[sparseColumns + j];
+    }
+
+    return acc;
 }
 
 void backfillMainColumns(const std::vector<RowData>& rows,
@@ -149,36 +188,62 @@ OkvsEncoder::EncodedTable OkvsEncoder::encode(std::span<const KeyView> keys,
 }
 
 GF128 OkvsEncoder::decode(KeyView key, const EncodedTableView& table) const {
+    if (table.data.size() < table.sparseColumns + table.denseColumns) {
+        throw std::runtime_error("Encoded table view smaller than expected.");
+    }
     RowHasher hasher(table.sparseColumns, table.denseColumns, mConfig.weight, mSeed);
-    if (key.size > 0 && key.data == nullptr) {
-        throw std::runtime_error("KeyView points to null data.");
+    return decodeWithHasher(hasher, key, table.data, table.sparseColumns, table.denseColumns);
+}
+
+void OkvsEncoder::decode(std::span<const KeyView> keys,
+                         std::span<GF128> values,
+                         const EncodedTableView& table,
+                         std::size_t numThreads) const {
+    if (keys.size() != values.size()) {
+        throw std::runtime_error("Mismatched key/output sizes for decode.");
     }
-    std::span<const std::uint8_t> keyBytes;
-    if (key.size == 0 || key.data == nullptr) {
-        keyBytes = {};
-    } else {
-        keyBytes = std::span<const std::uint8_t>(key.data, key.size);
-    }
-    RowData row = hasher.generate(keyBytes);
     if (table.data.size() < table.sparseColumns + table.denseColumns) {
         throw std::runtime_error("Encoded table view smaller than expected.");
     }
 
-    GF128 acc = GF128::zero();
-    for (auto idx : row.sparse) {
-        if (idx >= table.sparseColumns) {
-            throw std::runtime_error("Sparse index out of range during decode.");
+    RowHasher hasher(table.sparseColumns, table.denseColumns, mConfig.weight, mSeed);
+    const std::size_t threads = std::max<std::size_t>(1, numThreads);
+
+    std::atomic<std::size_t> next{0};
+    std::exception_ptr workerError = nullptr;
+
+    auto worker = [&]() {
+        try {
+            while (true) {
+                const auto i = next.fetch_add(1, std::memory_order_relaxed);
+                if (i >= keys.size()) {
+                    break;
+                }
+                values[i] = decodeWithHasher(hasher, keys[i], table.data, table.sparseColumns, table.denseColumns);
+            }
+        } catch (...) {
+            if (!workerError) {
+                workerError = std::current_exception();
+            }
         }
-        acc += table.data[idx];
-    }
-    for (std::size_t j = 0; j < row.dense.size(); ++j) {
-        if (j >= table.denseColumns) {
-            throw std::runtime_error("Dense index out of range during decode.");
+    };
+
+    if (threads == 1 || keys.size() < 2) {
+        worker();
+    } else {
+        std::vector<std::thread> pool;
+        pool.reserve(threads);
+        for (std::size_t t = 0; t < threads; ++t) {
+            pool.emplace_back(worker);
         }
-        acc += row.dense[j] * table.data[table.sparseColumns + j];
+        for (auto& thread : pool) {
+            thread.join();
+        }
     }
-    return acc;
+
+    if (workerError) {
+        std::rethrow_exception(workerError);
+    }
 }
 
 } // namespace okvs
-

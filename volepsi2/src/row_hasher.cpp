@@ -1,5 +1,7 @@
 #include "okvs/row_hasher.h"
 
+#include "hash_utils.h"
+
 #include <algorithm>
 #include <iterator>
 #include <stdexcept>
@@ -64,10 +66,12 @@ RowData RowHasher::generate(std::span<const std::uint8_t> keyBytes) const {
     if (keyBytes.size() == 16) {
         block = _mm_loadu_si128(reinterpret_cast<const __m128i*>(keyBytes.data()));
     } else {
-        // Fallback or simple hash.
-        // For now, copy what fits.
-        std::size_t n = std::min(keyBytes.size(), std::size_t(16));
-        std::memcpy(&block, keyBytes.data(), n);
+        const auto words = internal::hashBytesTo128(
+            keyBytes,
+            0x6a09e667f3bcc909ULL,
+            0xbb67ae8584caa73bULL);
+        alignas(16) std::array<std::uint64_t, 2> hashedBlock = {words[0], words[1]};
+        block = _mm_load_si128(reinterpret_cast<const __m128i*>(hashedBlock.data()));
     }
 
     // 2. Encrypt the block to get randomness
@@ -114,7 +118,7 @@ RowData RowHasher::generate(std::span<const std::uint8_t> keyBytes) const {
     // If still collision, re-encrypt state (as a PRNG step).
     
     // Simplified robust loop:
-    while (found < mWeight) {
+    while (found < mWeight && mMPrime != 0) {
         for (int i = 0; i < 4 && found < mWeight; ++i) {
             uint32_t candidate = r[i] % mMPrime;
             bool duplicate = false;
@@ -191,4 +195,3 @@ RowData RowHasher::generate(std::span<const std::uint8_t> keyBytes) const {
 }
 
 } // namespace okvs
-

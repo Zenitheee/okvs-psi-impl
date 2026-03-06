@@ -46,6 +46,10 @@ public:
     [[nodiscard]] EncodedTable encode(std::span<const KeyView> keys,
                                       std::span<const GF128> values) const;
     [[nodiscard]] GF128 decode(KeyView key, const EncodedTableView& table) const;
+    void decode(std::span<const KeyView> keys,
+                std::span<GF128> values,
+                const EncodedTableView& table,
+                std::size_t numThreads = 1) const;
 
     [[nodiscard]] std::size_t sparseSize(std::size_t numItems) const;
     [[nodiscard]] std::size_t denseSize(std::size_t numItems) const;
@@ -58,4 +62,3 @@ private:
 };
 
 } // namespace okvs
-
