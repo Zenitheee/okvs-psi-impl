@@ -6,6 +6,7 @@ set(VOLEPSI2_SOURCES
     src/row_hasher.cpp
     src/paxos.cpp
     src/encoder.cpp
+    src/binned_encoder.cpp
 )
 
 add_library(volepsi2 STATIC ${VOLEPSI2_SOURCES})
@@ -24,5 +25,4 @@ add_test(NAME okvs_roundtrip COMMAND volepsi2_tests)
 add_executable(gf128_square_test tests/gf128_square_test.cpp)
 target_link_libraries(gf128_square_test PRIVATE volepsi2)
 add_test(NAME gf128_square_test COMMAND gf128_square_test)
-
 
