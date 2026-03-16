@@ -104,6 +104,8 @@ int main() {
     for (auto idx : psiResult.intersectionIndices) {
         std::cout << ' ' << idx;
     }
+    std::cout << "\nPSI VOLE backend: "
+              << (psiResult.usedRealVole ? "real" : "simulated");
     std::cout << "\nPSI intersection values:";
     for (auto idx : psiResult.intersectionIndices) {
         std::cout << ' ' << receiverItems[idx];

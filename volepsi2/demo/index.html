@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>volepsi2 演示界面</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+</head>
+<body>
+    <main class="shell">
+        <section class="hero panel">
+            <div class="hero-copy">
+                <p class="eyebrow">volepsi2 演示界面</p>
+                <h1>一键执行 PSI，并实时查看协议阶段数据。</h1>
+                <p class="hero-text">
+                    通过图形化界面封装 OKVS + VOLE PSI 流程，实时展示
+                    哈希映射、OKVS 编码、VOLE 生成、校正传输与交集计算
+                    的耗时和网络流量变化。
+                </p>
+            </div>
+            <div class="hero-rail">
+                <div class="rail-chip">哈希映射</div>
+                <div class="rail-chip">OKVS 编码</div>
+                <div class="rail-chip">VOLE 生成</div>
+                <div class="rail-chip">校正传输</div>
+                <div class="rail-chip">交集计算</div>
+            </div>
+        </section>
+
+        <section class="top-grid">
+            <form id="run-form" class="panel control-panel">
+                <div class="panel-heading">
+                    <div>
+                        <p class="eyebrow">运行参数</p>
+                        <h2>协议输入</h2>
+                    </div>
+                    <button id="run-button" class="primary-button" type="submit">
+                        一键求交
+                    </button>
+                </div>
+
+                <div class="preset-strip" aria-label="运行预设">
+                    <button class="preset-chip is-active" type="button" data-preset="quick">快速演示</button>
+                    <button class="preset-chip" type="button" data-preset="balanced">均衡中型</button>
+                    <button class="preset-chip" type="button" data-preset="throughput">高吞吐</button>
+                    <button class="preset-chip" type="button" data-preset="million">百万级</button>
+                </div>
+
+                <div class="field-grid">
+                    <label class="field">
+                        <span>接收方规模</span>
+                        <select id="receiver-size" name="receiverSize">
+                            <option value="4096" selected>2^12 / 4,096</option>
+                            <option value="16384">2^14 / 16,384</option>
+                            <option value="65536">2^16 / 65,536</option>
+                            <option value="262144">2^18 / 262,144</option>
+                            <option value="1048576">2^20 / 1,048,576</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>发送方规模</span>
+                        <select id="sender-size" name="senderSize">
+                            <option value="4096" selected>2^12 / 4,096</option>
+                            <option value="16384">2^14 / 16,384</option>
+                            <option value="65536">2^16 / 65,536</option>
+                            <option value="262144">2^18 / 262,144</option>
+                            <option value="1048576">2^20 / 1,048,576</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>目标交集规模</span>
+                        <select id="intersection-size" name="intersectionSize">
+                            <option value="256">256</option>
+                            <option value="512" selected>512</option>
+                            <option value="1024">1,024</option>
+                            <option value="4096">4,096</option>
+                            <option value="16384">16,384</option>
+                            <option value="65536">65,536</option>
+                            <option value="262144">262,144</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>线程数</span>
+                        <select id="num-threads" name="numThreads">
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                            <option value="4" selected>4</option>
+                            <option value="8">8</option>
+                            <option value="16">16</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>聚类阈值</span>
+                        <select id="bin-size-hint" name="binSizeHint">
+                            <option value="512">512</option>
+                            <option value="2048" selected>2,048</option>
+                            <option value="8192">8,192</option>
+                            <option value="16384">16,384</option>
+                            <option value="32768">32,768</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>随机种子</span>
+                        <select id="seed" name="seed">
+                            <option value="8241975136114742642" selected>稳定样本 A</option>
+                            <option value="5577006791947779410">稳定样本 B</option>
+                            <option value="1357913579135791357">高交叠样本</option>
+                            <option value="2468024680246802468">大规模样本</option>
+                        </select>
+                    </label>
+                </div>
+
+                <div class="run-message">
+                    <div class="run-message-title">过程记录</div>
+                    <div id="run-message" class="run-message-list">
+                        <div class="run-message-line is-empty">
+                            点击按钮后，这里会在当前面板内按行记录求交过程。
+                        </div>
+                    </div>
+                </div>
+            </form>
+
+            <section class="panel summary-panel">
+                <div class="panel-heading">
+                    <div>
+                        <p class="eyebrow">执行摘要</p>
+                        <h2>运行状态</h2>
+                    </div>
+                    <div id="status-pill" class="status-pill idle">待执行</div>
+                </div>
+
+                <div class="metric-grid">
+                    <article class="metric-card">
+                        <span>总耗时</span>
+                        <strong id="metric-total-time">0 ms</strong>
+                    </article>
+                    <article class="metric-card">
+                        <span>总流量</span>
+                        <strong id="metric-total-traffic">0 B</strong>
+                    </article>
+                    <article class="metric-card">
+                        <span>OKVS 槽位数</span>
+                        <strong id="metric-okvs-size">0</strong>
+                    </article>
+                    <article class="metric-card">
+                        <span>交集规模</span>
+                        <strong id="metric-intersection-size">0</strong>
+                    </article>
+                </div>
+
+                <div class="meta-strip">
+                    <div>
+                        <span class="meta-label">VOLE 后端</span>
+                        <strong id="metric-vole-mode">尚未开始</strong>
+                    </div>
+                    <div>
+                        <span class="meta-label">聚类编码</span>
+                        <strong id="metric-clustering">尚未开始</strong>
+                    </div>
+                    <div>
+                        <span class="meta-label">进度</span>
+                        <strong id="metric-progress">0 / 5 个阶段</strong>
+                    </div>
+                </div>
+
+                <div id="stage-feed" class="stage-feed empty-state">
+                    协议推进后，阶段更新会显示在这里。
+                </div>
+            </section>
+        </section>
+
+        <section class="chart-grid">
+            <article class="panel chart-panel">
+                <div class="panel-heading">
+                    <div>
+                        <p class="eyebrow">耗时图表</p>
+                        <h2>阶段耗时</h2>
+                    </div>
+                </div>
+                <div id="time-chart" class="bar-chart empty-state">
+                    运行演示后将在这里绘制各阶段耗时。
+                </div>
+            </article>
+
+            <article class="panel chart-panel">
+                <div class="panel-heading">
+                    <div>
+                        <p class="eyebrow">流量图表</p>
+                        <h2>阶段网络流量</h2>
+                    </div>
+                </div>
+                <div id="traffic-chart" class="bar-chart empty-state">
+                    这里会显示各协议阶段在本地 socket 上的真实流量。
+                </div>
+            </article>
+        </section>
+
+        <section class="bottom-grid">
+            <article class="panel data-panel">
+                <div class="panel-heading">
+                    <div>
+                        <p class="eyebrow">交集视图</p>
+                        <h2>命中元素</h2>
+                    </div>
+                </div>
+                <div id="intersection-preview" class="token-cloud empty-state">
+                    完成运行后，这里会展示交集样本。
+                </div>
+            </article>
+
+            <article class="panel data-panel">
+                <div class="panel-heading">
+                    <div>
+                        <p class="eyebrow">数据样本</p>
+                        <h2>接收方与发送方示例</h2>
+                    </div>
+                </div>
+                <div class="preview-grid">
+                    <div>
+                        <h3>接收方样本</h3>
+                        <ul id="receiver-preview" class="preview-list">
+                            <li class="empty-row">暂无数据。</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h3>发送方样本</h3>
+                        <ul id="sender-preview" class="preview-list">
+                            <li class="empty-row">暂无数据。</li>
+                        </ul>
+                    </div>
+                </div>
+            </article>
+        </section>
+
+        <footer class="panel footnote-panel">
+            <p id="traffic-note">
+                所有协议流量都来自真实本地 socket 传输，不再使用后两阶段的估算值。
+            </p>
+        </footer>
+    </main>
+</body>
+</html>

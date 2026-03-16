@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <exception>
 #include <span>
 #include <stdexcept>
@@ -120,7 +121,12 @@ std::size_t OkvsEncoder::sparseSize(std::size_t numItems) const {
     if (mConfig.explicitSparseSize != 0) {
         return mConfig.explicitSparseSize;
     }
-    return static_cast<std::size_t>(std::ceil(mConfig.sparseExpansion * static_cast<double>(numItems)));
+    if (numItems == 0) {
+        return 0;
+    }
+    return std::max<std::size_t>(
+        mConfig.weight,
+        static_cast<std::size_t>(std::ceil(mConfig.sparseExpansion * static_cast<double>(numItems))));
 }
 
 std::size_t OkvsEncoder::denseSize(std::size_t numItems) const {

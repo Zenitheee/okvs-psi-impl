@@ -53,6 +53,10 @@ RowHasher::RowHasher(std::size_t mPrime, std::size_t denseCols, std::size_t weig
 }
 
 RowData RowHasher::generate(std::span<const std::uint8_t> keyBytes) const {
+    if (mMPrime != 0 && mMPrime < mWeight) {
+        throw std::runtime_error("Sparse column count smaller than row weight.");
+    }
+
     RowData row;
     row.sparse.reserve(mWeight);
     if (mDenseCols > 0) {
@@ -109,8 +113,7 @@ RowData RowHasher::generate(std::span<const std::uint8_t> keyBytes) const {
     r[2] = static_cast<std::uint32_t>(randHigh);
     r[3] = static_cast<std::uint32_t>(randHigh >> 32);
     
-    int found = 0;
-    int attempt = 0;
+    std::size_t found = 0;
     
     // To handle collisions efficiently without loop:
     // Try first 3. If distinct, good.
@@ -122,7 +125,7 @@ RowData RowHasher::generate(std::span<const std::uint8_t> keyBytes) const {
         for (int i = 0; i < 4 && found < mWeight; ++i) {
             uint32_t candidate = r[i] % mMPrime;
             bool duplicate = false;
-            for (int k = 0; k < found; ++k) {
+            for (std::size_t k = 0; k < found; ++k) {
                 if (row.sparse[k] == candidate) {
                     duplicate = true;
                     break;

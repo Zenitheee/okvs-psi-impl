@@ -4,7 +4,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace okvs {
@@ -16,10 +18,35 @@ struct PsiConfig {
     std::uint64_t seed = 0xc0ffee1234567890ULL;
 };
 
+struct PsiStageStat {
+    std::string id;
+    std::string label;
+    std::string detail;
+    double durationMs = 0.0;
+    std::size_t networkBytes = 0;
+    bool networkBytesEstimated = false;
+};
+
+struct PsiTelemetry {
+    std::vector<PsiStageStat> stages;
+    double totalDurationMs = 0.0;
+    std::size_t totalNetworkBytes = 0;
+    std::size_t receiverSetSize = 0;
+    std::size_t senderSetSize = 0;
+    std::size_t okvsSize = 0;
+    std::size_t intersectionSize = 0;
+    bool usedClustering = false;
+    bool usedRealVole = false;
+};
+
+using PsiTelemetryCallback = std::function<void(const PsiTelemetry&)>;
+
 struct PsiResult {
     std::vector<std::size_t> intersectionIndices;
     std::size_t okvsSize = 0;
     bool usedClustering = false;
+    bool usedRealVole = false;
+    PsiTelemetry telemetry;
 };
 
 class SemiHonestPsi {
@@ -28,6 +55,14 @@ public:
 
     [[nodiscard]] PsiResult run(std::span<const KeyView> receiverSet,
                                 std::span<const KeyView> senderSet) const;
+    [[nodiscard]] PsiResult run(std::span<const KeyView> receiverSet,
+                                std::span<const KeyView> senderSet,
+                                const PsiTelemetryCallback& onUpdate) const;
+    [[nodiscard]] PsiResult runTwoPartyLocal(std::span<const KeyView> receiverSet,
+                                             std::span<const KeyView> senderSet) const;
+    [[nodiscard]] PsiResult runTwoPartyLocal(std::span<const KeyView> receiverSet,
+                                             std::span<const KeyView> senderSet,
+                                             const PsiTelemetryCallback& onUpdate) const;
 
 private:
     PsiConfig mConfig;
