@@ -15,6 +15,9 @@ if(NOT TARGET oc::libOTe)
         libOTe
         QUIET
         CONFIG
+        COMPONENTS
+            silent_vole
+            no_asan
         HINTS
             ${CMAKE_CURRENT_SOURCE_DIR}/../volepsi/out/libOTe
     )
@@ -23,7 +26,8 @@ endif()
 if(NOT TARGET oc::libOTe)
     message(FATAL_ERROR
         "volepsi2 now requires libOTe for the real VOLE backend. "
-        "Build through volepsi/build.py or make libOTe discoverable to CMake.")
+        "Build through volepsi/build.py with VOLE_PSI_ENABLE_ASAN=OFF "
+        "or make a no-asan libOTe install discoverable to CMake.")
 endif()
 
 find_package(Threads REQUIRED)

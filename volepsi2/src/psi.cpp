@@ -27,9 +27,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include <sys/socket.h>
-#include <unistd.h>
-
 namespace okvs {
 namespace {
 
@@ -48,97 +45,21 @@ std::size_t bytesForFieldElements(std::size_t count) {
     return count * sizeof(GF128);
 }
 
-class ScopedFd {
-public:
-    ScopedFd() = default;
-    explicit ScopedFd(int value)
-        : mFd(value) {}
-
-    ScopedFd(const ScopedFd&) = delete;
-    ScopedFd& operator=(const ScopedFd&) = delete;
-
-    ScopedFd(ScopedFd&& other) noexcept
-        : mFd(other.mFd) {
-        other.mFd = -1;
-    }
-
-    ScopedFd& operator=(ScopedFd&& other) noexcept {
-        if (this != &other) {
-            reset();
-            mFd = other.mFd;
-            other.mFd = -1;
-        }
-        return *this;
-    }
-
-    ~ScopedFd() {
-        reset();
-    }
-
-    [[nodiscard]] int get() const {
-        return mFd;
-    }
-
-    void reset(int value = -1) {
-        if (mFd >= 0) {
-            ::close(mFd);
-        }
-        mFd = value;
-    }
-
-private:
-    int mFd = -1;
-};
-
-struct LocalSocketPair {
-    ScopedFd first;
-    ScopedFd second;
-};
-
-LocalSocketPair makeLocalSocketPair() {
-    std::array<int, 2> fds{};
-    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds.data()) != 0) {
-        throw std::runtime_error("failed to create a local socket pair");
-    }
-    return LocalSocketPair{ScopedFd(fds[0]), ScopedFd(fds[1])};
-}
-
-std::size_t sendAllBytes(int fd, std::span<const std::uint8_t> bytes) {
-    std::size_t sent = 0;
-    while (sent < bytes.size()) {
-        const auto chunk = ::send(fd, bytes.data() + sent, bytes.size() - sent, MSG_NOSIGNAL);
-        if (chunk <= 0) {
-            throw std::runtime_error("failed to send bytes on a local PSI socket");
-        }
-        sent += static_cast<std::size_t>(chunk);
-    }
-    return sent;
-}
-
-void recvAllBytes(int fd, std::span<std::uint8_t> bytes) {
-    std::size_t received = 0;
-    while (received < bytes.size()) {
-        const auto chunk = ::recv(fd, bytes.data() + received, bytes.size() - received, 0);
-        if (chunk <= 0) {
-            throw std::runtime_error("failed to receive bytes on a local PSI socket");
-        }
-        received += static_cast<std::size_t>(chunk);
-    }
-}
-
-std::size_t sendFieldVector(int fd, std::span<const GF128> values) {
+std::vector<std::uint8_t> serializeFieldVector(std::span<const GF128> values) {
     std::vector<std::uint8_t> bytes(values.size() * 16, 0);
     for (std::size_t i = 0; i < values.size(); ++i) {
         const auto fieldBytes = values[i].toBytes();
         std::memcpy(bytes.data() + i * 16, fieldBytes.data(), fieldBytes.size());
     }
-    return sendAllBytes(fd, std::span<const std::uint8_t>(bytes.data(), bytes.size()));
+    return bytes;
 }
 
-std::vector<GF128> recvFieldVector(int fd, std::size_t count) {
-    std::vector<std::uint8_t> bytes(count * 16, 0);
-    recvAllBytes(fd, std::span<std::uint8_t>(bytes.data(), bytes.size()));
+std::vector<GF128> deserializeFieldVector(std::span<const std::uint8_t> bytes) {
+    if (bytes.size() % 16 != 0) {
+        throw std::runtime_error("field vector payload size is not a multiple of 16 bytes");
+    }
 
+    const auto count = bytes.size() / 16;
     std::vector<GF128> values(count, GF128::zero());
     for (std::size_t i = 0; i < count; ++i) {
         std::array<std::uint8_t, 16> fieldBytes{};
@@ -148,9 +69,37 @@ std::vector<GF128> recvFieldVector(int fd, std::size_t count) {
     return values;
 }
 
+std::size_t sendFieldVector(coproto::Socket& socket, std::span<const GF128> values) {
+    auto bytes = serializeFieldVector(values);
+    const auto byteCount = bytes.size();
+    macoro::sync_wait(socket.send(std::move(bytes)));
+    macoro::sync_wait(socket.flush());
+    return byteCount;
+}
+
+std::vector<GF128> recvFieldVector(coproto::Socket& socket, std::size_t count) {
+    std::vector<std::uint8_t> bytes(count * 16, 0);
+    macoro::sync_wait(socket.recv(bytes));
+    return deserializeFieldVector(std::span<const std::uint8_t>(bytes.data(), bytes.size()));
+}
+
 void rethrowIfSet(const std::exception_ptr& error) {
     if (error) {
         std::rethrow_exception(error);
+    }
+}
+
+std::string exceptionMessage(const std::exception_ptr& error) {
+    if (!error) {
+        return {};
+    }
+
+    try {
+        std::rethrow_exception(error);
+    } catch (const std::exception& ex) {
+        return ex.what();
+    } catch (...) {
+        return "unknown exception";
     }
 }
 
@@ -274,7 +223,7 @@ VoleCorrelation generateRealVole(std::size_t correlationSize,
 }
 #endif
 
-VoleCorrelation generateSimulatedVole(std::size_t correlationSize, SessionRng& rng) {
+[[maybe_unused]] VoleCorrelation generateSimulatedVole(std::size_t correlationSize, SessionRng& rng) {
     VoleCorrelation correlation;
     correlation.delta = rng.nextField();
     correlation.senderB.resize(correlationSize, GF128::zero());
@@ -663,13 +612,13 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
     {
         const auto stageStart = Clock::now();
         const auto tableSize = result.okvsSize;
-        auto sockets = makeLocalSocketPair();
+        auto sockets = coproto::LocalAsyncSocket::makePair();
         std::size_t correctionBytes = 0;
         std::exception_ptr receiverError;
         std::exception_ptr senderError;
 
         std::thread receiverThread(
-            [receiverSocket = std::move(sockets.first),
+            [receiverSocket = std::move(sockets[0]),
              receiverSet,
              tableSize,
              &receiverOkvs,
@@ -685,20 +634,25 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
                     }
 
                     correctionBytes = sendFieldVector(
-                        receiverSocket.get(),
+                        receiverSocket,
                         std::span<const GF128>(correction.data(), correction.size()));
 
                     receiverOkvs.decode(
                         receiverSet,
                         std::span<GF128>(receiverDecoded.data(), receiverDecoded.size()),
                         std::span<const GF128>(vole.receiverA.data(), vole.receiverA.size()));
+                } catch (const std::exception& ex) {
+                    receiverError = std::make_exception_ptr(
+                        std::runtime_error(
+                            std::string("correction transfer receiver thread failed: ") + ex.what()));
                 } catch (...) {
-                    receiverError = std::current_exception();
+                    receiverError = std::make_exception_ptr(
+                        std::runtime_error("correction transfer receiver thread failed"));
                 }
             });
 
         std::thread senderThread(
-            [senderSocket = std::move(sockets.second),
+            [senderSocket = std::move(sockets[1]),
              senderSet,
              tableSize,
              &senderOkvs,
@@ -706,7 +660,7 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
              &vole,
              &senderError]() mutable {
                 try {
-                    const auto correction = recvFieldVector(senderSocket.get(), tableSize);
+                    const auto correction = recvFieldVector(senderSocket, tableSize);
                     std::vector<GF128> bPrime(tableSize, GF128::zero());
                     for (std::size_t i = 0; i < tableSize; ++i) {
                         bPrime[i] = vole.senderB[i] + correction[i] * vole.delta;
@@ -716,15 +670,28 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
                         senderSet,
                         std::span<GF128>(senderDecoded.data(), senderDecoded.size()),
                         std::span<const GF128>(bPrime.data(), bPrime.size()));
+                } catch (const std::exception& ex) {
+                    senderError = std::make_exception_ptr(
+                        std::runtime_error(
+                            std::string("correction transfer sender thread failed: ") + ex.what()));
                 } catch (...) {
-                    senderError = std::current_exception();
+                    senderError = std::make_exception_ptr(
+                        std::runtime_error("correction transfer sender thread failed"));
                 }
             });
 
         receiverThread.join();
         senderThread.join();
-        rethrowIfSet(receiverError);
+        if (senderError && receiverError) {
+            throw std::runtime_error(
+                "correction transfer failed on both parties: sender='" +
+                exceptionMessage(senderError) +
+                "', receiver='" +
+                exceptionMessage(receiverError) +
+                "'");
+        }
         rethrowIfSet(senderError);
+        rethrowIfSet(receiverError);
 
         publishStage(
             result,
@@ -744,13 +711,13 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
         const auto stageStart = Clock::now();
         const auto tagCount = senderSet.size();
         const auto shuffleSeed = rng.nextU64();
-        auto sockets = makeLocalSocketPair();
+        auto sockets = coproto::LocalAsyncSocket::makePair();
         std::size_t tagBytes = 0;
         std::exception_ptr receiverError;
         std::exception_ptr senderError;
 
         std::thread senderThread(
-            [senderSocket = std::move(sockets.first),
+            [senderSocket = std::move(sockets[0]),
              senderSet,
              shuffleSeed,
              &senderDecoded,
@@ -767,22 +734,27 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
 
                     std::shuffle(senderTags.begin(), senderTags.end(), std::mt19937_64(shuffleSeed));
                     tagBytes = sendFieldVector(
-                        senderSocket.get(),
+                        senderSocket,
                         std::span<const GF128>(senderTags.data(), senderTags.size()));
+                } catch (const std::exception& ex) {
+                    senderError = std::make_exception_ptr(
+                        std::runtime_error(
+                            std::string("intersection sender thread failed: ") + ex.what()));
                 } catch (...) {
-                    senderError = std::current_exception();
+                    senderError = std::make_exception_ptr(
+                        std::runtime_error("intersection sender thread failed"));
                 }
             });
 
         std::thread receiverThread(
-            [receiverSocket = std::move(sockets.second),
+            [receiverSocket = std::move(sockets[1]),
              tagCount,
              receiverSet,
              &receiverDecoded,
              &result,
              &receiverError]() mutable {
                 try {
-                    const auto senderTags = recvFieldVector(receiverSocket.get(), tagCount);
+                    const auto senderTags = recvFieldVector(receiverSocket, tagCount);
                     std::unordered_set<GF128, GF128Hash> senderTagSet;
                     senderTagSet.reserve(senderTags.size());
                     for (const auto& tag : senderTags) {
@@ -794,8 +766,13 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
                             result.intersectionIndices.push_back(i);
                         }
                     }
+                } catch (const std::exception& ex) {
+                    receiverError = std::make_exception_ptr(
+                        std::runtime_error(
+                            std::string("intersection receiver thread failed: ") + ex.what()));
                 } catch (...) {
-                    receiverError = std::current_exception();
+                    receiverError = std::make_exception_ptr(
+                        std::runtime_error("intersection receiver thread failed"));
                 }
             });
 
