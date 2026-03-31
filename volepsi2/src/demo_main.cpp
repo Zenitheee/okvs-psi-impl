@@ -1,7 +1,10 @@
+#include "okvs/input_dataset.h"
 #include "okvs/psi.h"
 
 #include <algorithm>
 #include <arpa/inet.h>
+#include <atomic>
+#include <cctype>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +14,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <sstream>
@@ -29,6 +33,7 @@
 namespace {
 
 constexpr std::size_t kMaxDemoSetSize = 1u << 20;
+constexpr std::size_t kMaxRequestBodyBytes = 64u << 20;
 constexpr std::string_view kTrafficNote =
     "All protocol traffic is measured from local sockets. Silent VOLE uses the coproto "
     "local transport, and the correction vector plus sender tags are exchanged over a "
@@ -91,6 +96,7 @@ struct DemoRequest {
     std::size_t numThreads = 4;
     std::size_t binSizeHint = 2048;
     std::uint64_t seed = 0x7265646172746572ULL;
+    std::string sessionToken;
 };
 
 struct DemoDataset {
@@ -98,11 +104,29 @@ struct DemoDataset {
     std::vector<std::string> senderItems;
 };
 
+struct ResolvedDataset {
+    DemoDataset dataset;
+    bool usesCustomInput = false;
+    std::size_t receiverRawCount = 0;
+    std::size_t senderRawCount = 0;
+    std::size_t receiverEmptyCount = 0;
+    std::size_t senderEmptyCount = 0;
+    std::size_t receiverDuplicateCount = 0;
+    std::size_t senderDuplicateCount = 0;
+    std::size_t intersectionSize = 0;
+};
+
 struct HttpRequest {
     std::string method;
     std::string path;
     std::string query;
+    std::unordered_map<std::string, std::string> headers;
+    std::string body;
 };
+
+std::mutex gPreparedDatasetMutex;
+std::unordered_map<std::string, okvs::PreparedPsiDataset> gPreparedDatasets;
+std::atomic<std::uint64_t> gPreparedDatasetCounter{1};
 
 std::uint64_t splitMix64(std::uint64_t x) {
     x += 0x9e3779b97f4a7c15ULL;
@@ -115,6 +139,13 @@ std::string hex64(std::uint64_t value) {
     std::ostringstream stream;
     stream << std::hex << std::setw(16) << std::setfill('0') << value;
     return stream.str();
+}
+
+std::string makePreparedDatasetToken() {
+    const auto counter = gPreparedDatasetCounter.fetch_add(1, std::memory_order_relaxed);
+    const auto mixed0 = splitMix64(counter ^ 0x6f6b76732d707369ULL);
+    const auto mixed1 = splitMix64(counter ^ 0x6461746173657421ULL);
+    return "dataset-" + hex64(mixed0) + hex64(mixed1);
 }
 
 std::string jsonEscape(std::string_view value) {
@@ -262,9 +293,25 @@ std::vector<std::size_t> previewIndices(const std::vector<std::size_t>& values, 
     return std::vector<std::size_t>(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(count));
 }
 
+std::string datasetSummaryToJson(const ResolvedDataset& resolved) {
+    std::ostringstream stream;
+    stream << '{'
+           << "\"mode\":" << jsonString(resolved.usesCustomInput ? "custom" : "synthetic") << ','
+           << "\"receiverRawCount\":" << resolved.receiverRawCount << ','
+           << "\"senderRawCount\":" << resolved.senderRawCount << ','
+           << "\"receiverEmptyCount\":" << resolved.receiverEmptyCount << ','
+           << "\"senderEmptyCount\":" << resolved.senderEmptyCount << ','
+           << "\"receiverDuplicateCount\":" << resolved.receiverDuplicateCount << ','
+           << "\"senderDuplicateCount\":" << resolved.senderDuplicateCount << ','
+           << "\"preparedIntersectionSize\":" << resolved.intersectionSize
+           << '}';
+    return stream.str();
+}
+
 std::string resultPayloadToJson(const DemoRequest& request,
-                                const DemoDataset& dataset,
+                                const ResolvedDataset& resolved,
                                 const okvs::PsiResult& result) {
+    const auto& dataset = resolved.dataset;
     const auto receiverPreview = previewStrings(dataset.receiverItems, 8);
     const auto senderPreview = previewStrings(dataset.senderItems, 8);
     const auto intersectionPreview = makeIntersectionPreview(
@@ -286,6 +333,7 @@ std::string resultPayloadToJson(const DemoRequest& request,
            << "\"usedClustering\":" << jsonBool(result.usedClustering) << ','
            << "\"usedRealVole\":" << jsonBool(result.usedRealVole) << ','
            << "\"trafficNote\":" << jsonString(kTrafficNote) << ','
+           << "\"datasetSummary\":" << datasetSummaryToJson(resolved) << ','
            << "\"receiverPreview\":" << stringArrayToJson(receiverPreview) << ','
            << "\"senderPreview\":" << stringArrayToJson(senderPreview) << ','
            << "\"intersectionIndexPreview\":" << numberArrayToJson(indexPreview) << ','
@@ -295,7 +343,7 @@ std::string resultPayloadToJson(const DemoRequest& request,
     return stream.str();
 }
 
-std::string readyPayloadToJson(const DemoRequest& request) {
+std::string readyPayloadToJson(const DemoRequest& request, const ResolvedDataset& resolved) {
     std::ostringstream stream;
     stream << '{'
            << "\"receiverSize\":" << request.receiverSize << ','
@@ -304,6 +352,7 @@ std::string readyPayloadToJson(const DemoRequest& request) {
            << "\"numThreads\":" << request.numThreads << ','
            << "\"binSizeHint\":" << request.binSizeHint << ','
            << "\"seed\":" << request.seed << ','
+           << "\"datasetSummary\":" << datasetSummaryToJson(resolved) << ','
            << "\"trafficNote\":" << jsonString(kTrafficNote)
            << '}';
     return stream.str();
@@ -417,17 +466,41 @@ bool sendSseEvent(int fd, std::string_view eventName, std::string_view payload) 
     return sendAll(fd, stream.str());
 }
 
-std::optional<HttpRequest> parseRequest(const std::string& rawRequest) {
-    const auto lineEnd = rawRequest.find("\r\n");
+std::string trimAscii(std::string_view value) {
+    std::size_t begin = 0;
+    while (begin < value.size() &&
+           std::isspace(static_cast<unsigned char>(value[begin])) != 0) {
+        ++begin;
+    }
+
+    std::size_t end = value.size();
+    while (end > begin &&
+           std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+        --end;
+    }
+
+    return std::string(value.substr(begin, end - begin));
+}
+
+std::string toLowerAscii(std::string_view value) {
+    std::string lowered(value);
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return lowered;
+}
+
+std::optional<HttpRequest> parseRequestHead(const std::string& rawHead) {
+    const auto lineEnd = rawHead.find("\r\n");
     if (lineEnd == std::string::npos) {
         return std::nullopt;
     }
 
-    std::istringstream stream(rawRequest.substr(0, lineEnd));
+    std::istringstream requestLine(rawHead.substr(0, lineEnd));
     HttpRequest request;
     std::string target;
     std::string version;
-    if (!(stream >> request.method >> target >> version)) {
+    if (!(requestLine >> request.method >> target >> version)) {
         return std::nullopt;
     }
 
@@ -436,6 +509,26 @@ std::optional<HttpRequest> parseRequest(const std::string& rawRequest) {
     if (queryPos != std::string::npos) {
         request.query = target.substr(queryPos + 1);
     }
+
+    std::size_t headerStart = lineEnd + 2;
+    while (headerStart < rawHead.size()) {
+        const auto headerEnd = rawHead.find("\r\n", headerStart);
+        if (headerEnd == std::string::npos) {
+            break;
+        }
+        if (headerEnd == headerStart) {
+            break;
+        }
+
+        const auto separator = rawHead.find(':', headerStart);
+        if (separator != std::string::npos && separator < headerEnd) {
+            const auto name = toLowerAscii(rawHead.substr(headerStart, separator - headerStart));
+            const auto value = trimAscii(rawHead.substr(separator + 1, headerEnd - separator - 1));
+            request.headers[name] = value;
+        }
+        headerStart = headerEnd + 2;
+    }
+
     return request;
 }
 
@@ -444,7 +537,8 @@ std::optional<HttpRequest> readRequest(int fd) {
     rawRequest.reserve(4096);
 
     char buffer[4096];
-    while (rawRequest.find("\r\n\r\n") == std::string::npos) {
+    std::size_t headerEnd = std::string::npos;
+    while ((headerEnd = rawRequest.find("\r\n\r\n")) == std::string::npos) {
         const auto received = ::recv(fd, buffer, sizeof(buffer), 0);
         if (received <= 0) {
             return std::nullopt;
@@ -455,22 +549,89 @@ std::optional<HttpRequest> readRequest(int fd) {
         }
     }
 
-    return parseRequest(rawRequest);
+    auto request = parseRequestHead(rawRequest.substr(0, headerEnd));
+    if (!request) {
+        return std::nullopt;
+    }
+
+    std::size_t contentLength = 0;
+    if (const auto iter = request->headers.find("content-length"); iter != request->headers.end()) {
+        try {
+            contentLength = static_cast<std::size_t>(std::stoull(iter->second));
+        } catch (const std::exception&) {
+            throw std::runtime_error("Invalid Content-Length header.");
+        }
+    }
+
+    if (contentLength > kMaxRequestBodyBytes) {
+        throw std::runtime_error("Request body exceeds the demo limit.");
+    }
+
+    request->body = rawRequest.substr(headerEnd + 4);
+    while (request->body.size() < contentLength) {
+        const auto received = ::recv(fd, buffer, sizeof(buffer), 0);
+        if (received <= 0) {
+            return std::nullopt;
+        }
+        request->body.append(buffer, static_cast<std::size_t>(received));
+        if (request->body.size() > kMaxRequestBodyBytes) {
+            throw std::runtime_error("Request body exceeds the demo limit.");
+        }
+    }
+
+    if (request->body.size() > contentLength) {
+        request->body.resize(contentLength);
+    }
+
+    return request;
 }
 
-std::unordered_map<std::string, std::string> parseQuery(std::string_view query) {
+int hexValue(char ch) {
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return ch - 'a' + 10;
+    }
+    if (ch >= 'A' && ch <= 'F') {
+        return ch - 'A' + 10;
+    }
+    return -1;
+}
+
+std::string urlDecode(std::string_view value) {
+    std::string decoded;
+    decoded.reserve(value.size());
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '+') {
+            decoded.push_back(' ');
+            continue;
+        }
+        if (value[i] == '%' && i + 2 < value.size()) {
+            const auto hi = hexValue(value[i + 1]);
+            const auto lo = hexValue(value[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                decoded.push_back(static_cast<char>((hi << 4) | lo));
+                i += 2;
+                continue;
+            }
+        }
+        decoded.push_back(value[i]);
+    }
+    return decoded;
+}
+
+std::unordered_map<std::string, std::string> parseParameterString(std::string_view encoded) {
     std::unordered_map<std::string, std::string> values;
     std::size_t start = 0;
-    while (start < query.size()) {
-        const auto separator = query.find('&', start);
-        const auto token = query.substr(
+    while (start < encoded.size()) {
+        const auto separator = encoded.find('&', start);
+        const auto token = encoded.substr(
             start,
-            separator == std::string_view::npos ? query.size() - start : separator - start);
+            separator == std::string_view::npos ? encoded.size() - start : separator - start);
         const auto equals = token.find('=');
         if (equals != std::string_view::npos) {
-            values.emplace(
-                std::string(token.substr(0, equals)),
-                std::string(token.substr(equals + 1)));
+            values[urlDecode(token.substr(0, equals))] = urlDecode(token.substr(equals + 1));
         }
         if (separator == std::string_view::npos) {
             break;
@@ -478,6 +639,10 @@ std::unordered_map<std::string, std::string> parseQuery(std::string_view query) 
         start = separator + 1;
     }
     return values;
+}
+
+std::unordered_map<std::string, std::string> parseQuery(std::string_view query) {
+    return parseParameterString(query);
 }
 
 std::uint64_t parseU64(std::string_view name,
@@ -505,33 +670,138 @@ DemoRequest parseDemoRequest(std::string_view queryString) {
     request.numThreads = static_cast<std::size_t>(parseU64("numThreads", query, request.numThreads));
     request.binSizeHint = static_cast<std::size_t>(parseU64("binSizeHint", query, request.binSizeHint));
     request.seed = parseU64("seed", query, request.seed);
+    if (const auto iter = query.find("token"); iter != query.end()) {
+        request.sessionToken = iter->second;
+    }
 
     if (request.numThreads == 0) {
         throw std::runtime_error("numThreads must be positive.");
     }
-    if (request.receiverSize > kMaxDemoSetSize || request.senderSize > kMaxDemoSetSize) {
+    if (request.sessionToken.empty() &&
+        (request.receiverSize > kMaxDemoSetSize || request.senderSize > kMaxDemoSetSize)) {
         throw std::runtime_error("Set sizes above 2^20 are disabled in the demo.");
     }
     return request;
+}
+
+ResolvedDataset resolveDataset(DemoRequest& request) {
+    ResolvedDataset resolved;
+    if (request.sessionToken.empty()) {
+        resolved.dataset = makeDataset(request);
+        resolved.receiverRawCount = request.receiverSize;
+        resolved.senderRawCount = request.senderSize;
+        resolved.intersectionSize = request.intersectionSize;
+        return resolved;
+    }
+
+    okvs::PreparedPsiDataset prepared;
+    {
+        std::scoped_lock lock(gPreparedDatasetMutex);
+        const auto iter = gPreparedDatasets.find(request.sessionToken);
+        if (iter == gPreparedDatasets.end()) {
+            throw std::runtime_error("The uploaded dataset session was not found or has expired.");
+        }
+        prepared = iter->second;
+    }
+
+    resolved.dataset.receiverItems = std::move(prepared.receiverItems);
+    resolved.dataset.senderItems = std::move(prepared.senderItems);
+    resolved.usesCustomInput = true;
+    resolved.receiverRawCount = prepared.receiverRawCount;
+    resolved.senderRawCount = prepared.senderRawCount;
+    resolved.receiverEmptyCount = prepared.receiverEmptyCount;
+    resolved.senderEmptyCount = prepared.senderEmptyCount;
+    resolved.receiverDuplicateCount = prepared.receiverDuplicateCount;
+    resolved.senderDuplicateCount = prepared.senderDuplicateCount;
+    resolved.intersectionSize = prepared.intersectionSize;
+
+    request.receiverSize = resolved.dataset.receiverItems.size();
+    request.senderSize = resolved.dataset.senderItems.size();
+    request.intersectionSize = resolved.intersectionSize;
+
+    if (request.receiverSize > kMaxDemoSetSize || request.senderSize > kMaxDemoSetSize) {
+        throw std::runtime_error("Uploaded sets above 2^20 items are disabled in the demo.");
+    }
+
+    return resolved;
+}
+
+std::string sessionPayloadToJson(const std::string& token,
+                                 const okvs::PreparedPsiDataset& prepared) {
+    std::ostringstream stream;
+    stream << '{'
+           << "\"token\":" << jsonString(token) << ','
+           << "\"receiverSize\":" << prepared.receiverItems.size() << ','
+           << "\"senderSize\":" << prepared.senderItems.size() << ','
+           << "\"intersectionSize\":" << prepared.intersectionSize << ','
+           << "\"receiverRawCount\":" << prepared.receiverRawCount << ','
+           << "\"senderRawCount\":" << prepared.senderRawCount << ','
+           << "\"receiverEmptyCount\":" << prepared.receiverEmptyCount << ','
+           << "\"senderEmptyCount\":" << prepared.senderEmptyCount << ','
+           << "\"receiverDuplicateCount\":" << prepared.receiverDuplicateCount << ','
+           << "\"senderDuplicateCount\":" << prepared.senderDuplicateCount
+           << '}';
+    return stream.str();
+}
+
+std::string requireParameter(std::string_view name,
+                             const std::unordered_map<std::string, std::string>& values) {
+    const auto iter = values.find(std::string(name));
+    if (iter == values.end()) {
+        throw std::runtime_error("Missing required parameter " + std::string(name) + ".");
+    }
+    return iter->second;
 }
 
 std::filesystem::path assetPath(std::string_view fileName) {
     return std::filesystem::path(VOLEPSI2_DEMO_ASSET_DIR) / fileName;
 }
 
-void runDemoStream(int fd, const DemoRequest& request) {
+void handleDatasetSessionRequest(int fd, const HttpRequest& request) {
+    if (request.method != "POST") {
+        sendResponse(
+            fd,
+            "405 Method Not Allowed",
+            "text/plain; charset=utf-8",
+            "Only POST is supported for dataset uploads.\n");
+        return;
+    }
+
+    const auto form = parseParameterString(request.body);
+    const auto receiverText = requireParameter("receiverText", form);
+    const auto senderText = requireParameter("senderText", form);
+    const auto prepared = okvs::preparePsiDataset(receiverText, senderText);
+
+    if (prepared.receiverItems.empty() && prepared.senderItems.empty()) {
+        throw std::runtime_error("Both uploaded datasets are empty after preprocessing.");
+    }
+    if (prepared.receiverItems.size() > kMaxDemoSetSize || prepared.senderItems.size() > kMaxDemoSetSize) {
+        throw std::runtime_error("Uploaded sets above 2^20 items are disabled in the demo.");
+    }
+
+    const auto token = makePreparedDatasetToken();
+    const auto body = sessionPayloadToJson(token, prepared);
+    {
+        std::scoped_lock lock(gPreparedDatasetMutex);
+        gPreparedDatasets.emplace(token, prepared);
+    }
+
+    sendResponse(fd, "200 OK", "application/json; charset=utf-8", body);
+}
+
+void runDemoStream(int fd, DemoRequest request) {
     if (!startEventStream(fd)) {
         return;
     }
 
-    if (!sendSseEvent(fd, "ready", readyPayloadToJson(request))) {
-        return;
-    }
-
     try {
-        const auto dataset = makeDataset(request);
-        auto receiverViews = makeViews(dataset.receiverItems);
-        auto senderViews = makeViews(dataset.senderItems);
+        const auto resolved = resolveDataset(request);
+        if (!sendSseEvent(fd, "ready", readyPayloadToJson(request, resolved))) {
+            return;
+        }
+
+        auto receiverViews = makeViews(resolved.dataset.receiverItems);
+        auto senderViews = makeViews(resolved.dataset.senderItems);
 
         okvs::PsiConfig config;
         config.binSizeHint = request.binSizeHint;
@@ -546,7 +816,7 @@ void runDemoStream(int fd, const DemoRequest& request) {
                 sendSseEvent(fd, "progress", progressPayloadToJson(telemetry));
             });
 
-        sendSseEvent(fd, "result", resultPayloadToJson(request, dataset, result));
+        sendSseEvent(fd, "result", resultPayloadToJson(request, resolved, result));
     } catch (const std::exception& ex) {
         sendSseEvent(
             fd,
@@ -644,8 +914,31 @@ void handleStaticRequest(int fd, std::string_view path) {
 
 void handleConnection(int clientFd) {
     ScopedFd client(clientFd);
-    const auto request = readRequest(client.get());
+    std::optional<HttpRequest> request;
+    try {
+        request = readRequest(client.get());
+    } catch (const std::exception& ex) {
+        sendResponse(
+            client.get(),
+            "400 Bad Request",
+            "text/plain; charset=utf-8",
+            std::string(ex.what()) + "\n");
+        return;
+    }
     if (!request) {
+        return;
+    }
+
+    if (request->path == "/api/session") {
+        try {
+            handleDatasetSessionRequest(client.get(), *request);
+        } catch (const std::exception& ex) {
+            sendResponse(
+                client.get(),
+                "400 Bad Request",
+                "text/plain; charset=utf-8",
+                std::string(ex.what()) + "\n");
+        }
         return;
     }
 

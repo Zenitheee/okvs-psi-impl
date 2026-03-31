@@ -203,6 +203,13 @@ body::after {
     margin-bottom: 1rem;
 }
 
+.mode-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.65rem;
+    margin-bottom: 1rem;
+}
+
 .preset-chip {
     border: 1px solid rgba(18, 36, 47, 0.1);
     border-radius: 999px;
@@ -225,6 +232,52 @@ body::after {
     color: var(--accent);
 }
 
+.mode-chip {
+    border: 1px solid rgba(18, 36, 47, 0.1);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.5);
+    color: var(--ink);
+    font: inherit;
+    font-weight: 700;
+    padding: 0.75rem 0.95rem;
+    cursor: pointer;
+    transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+
+.mode-chip:hover {
+    transform: translateY(-1px);
+}
+
+.mode-chip.is-active {
+    background: rgba(220, 123, 43, 0.12);
+    border-color: rgba(220, 123, 43, 0.35);
+    color: var(--signal);
+}
+
+.mode-panel.is-hidden {
+    display: none;
+}
+
+.custom-panel {
+    margin-bottom: 1rem;
+}
+
+.custom-note {
+    margin: 0 0 0.85rem;
+    color: var(--muted);
+    line-height: 1.55;
+}
+
+.custom-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.9rem;
+}
+
+.field-wide {
+    grid-column: 1 / -1;
+}
+
 .field {
     display: grid;
     gap: 0.45rem;
@@ -238,7 +291,8 @@ body::after {
 }
 
 .field input,
-.field select {
+.field select,
+.field textarea {
     border-radius: 18px;
     border: 1px solid rgba(18, 36, 47, 0.12);
     background: var(--panel-strong);
@@ -252,9 +306,16 @@ body::after {
 }
 
 .field input:focus,
-.field select:focus {
+.field select:focus,
+.field textarea:focus {
     outline: 2px solid rgba(15, 124, 98, 0.26);
     border-color: rgba(15, 124, 98, 0.3);
+}
+
+.field textarea {
+    min-height: 10rem;
+    resize: vertical;
+    line-height: 1.5;
 }
 
 .run-message {
@@ -541,6 +602,7 @@ body::after {
     .chart-grid,
     .bottom-grid,
     .field-grid,
+    .custom-grid,
     .metric-grid,
     .meta-strip,
     .preview-grid {

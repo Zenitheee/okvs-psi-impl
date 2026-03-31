@@ -42,9 +42,10 @@ std::vector<std::string> makeKeys(const std::string& prefix, std::size_t count) 
 std::vector<std::size_t> expectedIntersection(const std::vector<std::string>& receiver,
                                               const std::vector<std::string>& sender) {
     std::unordered_set<std::string> senderSet(sender.begin(), sender.end());
+    std::unordered_set<std::string> seenReceiver;
     std::vector<std::size_t> indices;
     for (std::size_t i = 0; i < receiver.size(); ++i) {
-        if (senderSet.contains(receiver[i])) {
+        if (senderSet.contains(receiver[i]) && seenReceiver.insert(receiver[i]).second) {
             indices.push_back(i);
         }
     }
@@ -303,6 +304,25 @@ int main() {
         return 1;
     }
 
+    const std::vector<std::string> duplicateReceiver = {
+        "dup-alpha",
+        "dup-beta",
+        "dup-alpha",
+        "dup-gamma",
+        "dup-beta",
+        "dup-delta"
+    };
+    const std::vector<std::string> duplicateSender = {
+        "sender-only",
+        "dup-beta",
+        "dup-alpha",
+        "dup-beta",
+        "dup-delta"
+    };
+    if (!runCase("receiver_duplicates", duplicateReceiver, duplicateSender, config, false)) {
+        return 1;
+    }
+
     okvs::PsiConfig localSocketConfig = config;
     localSocketConfig.numThreads = 2;
     auto localSocketReceiver = makeKeys("local-recv", 20);
@@ -311,6 +331,15 @@ int main() {
     localSocketSender[5] = localSocketReceiver[11];
     localSocketSender[9] = localSocketReceiver[18];
     if (!runCase("local_socket_flow", localSocketReceiver, localSocketSender, localSocketConfig, false, true)) {
+        return 1;
+    }
+    if (!runCase(
+            "receiver_duplicates_local",
+            duplicateReceiver,
+            duplicateSender,
+            localSocketConfig,
+            false,
+            true)) {
         return 1;
     }
 

@@ -22,6 +22,7 @@
 #include <memory>
 #include <random>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <unordered_set>
@@ -110,6 +111,38 @@ std::span<const std::uint8_t> asBytes(KeyView key) {
     return std::span<const std::uint8_t>(key.data, key.size);
 }
 
+std::string_view asStringView(KeyView key) {
+    const auto bytes = asBytes(key);
+    if (bytes.empty()) {
+        return {};
+    }
+    return std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+}
+
+struct CanonicalReceiverSet {
+    std::vector<KeyView> keys;
+    std::vector<std::size_t> firstPositions;
+};
+
+CanonicalReceiverSet canonicalizeReceiverSet(std::span<const KeyView> receiverSet) {
+    CanonicalReceiverSet canonical;
+    canonical.keys.reserve(receiverSet.size());
+    canonical.firstPositions.reserve(receiverSet.size());
+
+    std::unordered_set<std::string_view> seen;
+    seen.reserve(receiverSet.size());
+    for (std::size_t i = 0; i < receiverSet.size(); ++i) {
+        const auto key = asStringView(receiverSet[i]);
+        if (!seen.insert(key).second) {
+            continue;
+        }
+        canonical.keys.push_back(receiverSet[i]);
+        canonical.firstPositions.push_back(i);
+    }
+
+    return canonical;
+}
+
 class SessionRng {
 public:
     explicit SessionRng(std::uint64_t seed)
@@ -153,6 +186,22 @@ GF128 hashToBaseField(KeyView key, const GF128& salt) {
 
 GF128 hashOutput(const GF128& value) {
     return internal::hashFieldToField(value, kHOSeed0, kHOSeed1);
+}
+
+void appendIntersectionIndices(std::span<const GF128> receiverDecoded,
+                               std::span<const std::size_t> receiverPositions,
+                               const std::unordered_set<GF128, GF128Hash>& senderTagSet,
+                               std::vector<std::size_t>& intersectionIndices) {
+    if (receiverDecoded.size() != receiverPositions.size()) {
+        throw std::runtime_error("Receiver decode count does not match canonical position count.");
+    }
+
+    intersectionIndices.reserve(receiverDecoded.size());
+    for (std::size_t i = 0; i < receiverDecoded.size(); ++i) {
+        if (senderTagSet.contains(hashOutput(receiverDecoded[i]))) {
+            intersectionIndices.push_back(receiverPositions[i]);
+        }
+    }
 }
 
 #if OKVS_ENABLE_REAL_VOLE
@@ -352,26 +401,34 @@ PsiResult SemiHonestPsi::run(std::span<const KeyView> receiverSet,
         return result;
     }
 
+    const auto canonicalReceiver = canonicalizeReceiverSet(receiverSet);
+    const auto receiverKeys = std::span<const KeyView>(
+        canonicalReceiver.keys.data(),
+        canonicalReceiver.keys.size());
+    const auto receiverPositions = std::span<const std::size_t>(
+        canonicalReceiver.firstPositions.data(),
+        canonicalReceiver.firstPositions.size());
+
     SessionRng rng(
         mConfig.seed ^
-        (static_cast<std::uint64_t>(receiverSet.size()) << 32) ^
+        (static_cast<std::uint64_t>(receiverKeys.size()) << 32) ^
         static_cast<std::uint64_t>(senderSet.size()));
 
     const auto okvsSeed = rng.nextU64();
     const auto valueSeed = rng.nextField();
 
-    ProtocolOkvs okvs(mConfig, receiverSet.size(), okvsSeed);
+    ProtocolOkvs okvs(mConfig, receiverKeys.size(), okvsSeed);
     result.okvsSize = okvs.tableSize();
     result.usedClustering = okvs.usesClustering();
     result.telemetry.okvsSize = result.okvsSize;
     result.telemetry.usedClustering = result.usedClustering;
 
-    std::vector<GF128> receiverBaseValues(receiverSet.size(), GF128::zero());
+    std::vector<GF128> receiverBaseValues(receiverKeys.size(), GF128::zero());
     std::vector<GF128> senderBaseValues(senderSet.size(), GF128::zero());
     {
         const auto stageStart = Clock::now();
-        for (std::size_t i = 0; i < receiverSet.size(); ++i) {
-            receiverBaseValues[i] = hashToBaseField(receiverSet[i], valueSeed);
+        for (std::size_t i = 0; i < receiverKeys.size(); ++i) {
+            receiverBaseValues[i] = hashToBaseField(receiverKeys[i], valueSeed);
         }
         for (std::size_t i = 0; i < senderSet.size(); ++i) {
             senderBaseValues[i] = hashToBaseField(senderSet[i], valueSeed);
@@ -395,7 +452,7 @@ PsiResult SemiHonestPsi::run(std::span<const KeyView> receiverSet,
     {
         const auto stageStart = Clock::now();
         p = okvs.encode(
-            receiverSet,
+            receiverKeys,
             std::span<const GF128>(receiverBaseValues.data(), receiverBaseValues.size()));
         publishStage(
             result,
@@ -435,7 +492,7 @@ PsiResult SemiHonestPsi::run(std::span<const KeyView> receiverSet,
     }
 
     std::vector<GF128> bPrime(result.okvsSize, GF128::zero());
-    std::vector<GF128> receiverDecoded(receiverSet.size(), GF128::zero());
+    std::vector<GF128> receiverDecoded(receiverKeys.size(), GF128::zero());
     std::vector<GF128> senderDecoded(senderSet.size(), GF128::zero());
     {
         const auto stageStart = Clock::now();
@@ -446,7 +503,7 @@ PsiResult SemiHonestPsi::run(std::span<const KeyView> receiverSet,
         }
 
         okvs.decode(
-            receiverSet,
+            receiverKeys,
             std::span<GF128>(receiverDecoded.data(), receiverDecoded.size()),
             std::span<const GF128>(vole.receiverA.data(), vole.receiverA.size()));
 
@@ -482,11 +539,11 @@ PsiResult SemiHonestPsi::run(std::span<const KeyView> receiverSet,
             senderTagSet.insert(tag);
         }
 
-        for (std::size_t i = 0; i < receiverDecoded.size(); ++i) {
-            if (senderTagSet.contains(hashOutput(receiverDecoded[i]))) {
-                result.intersectionIndices.push_back(i);
-            }
-        }
+        appendIntersectionIndices(
+            std::span<const GF128>(receiverDecoded.data(), receiverDecoded.size()),
+            receiverPositions,
+            senderTagSet,
+            result.intersectionIndices);
 
         publishStage(
             result,
@@ -524,27 +581,35 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
         return result;
     }
 
+    const auto canonicalReceiver = canonicalizeReceiverSet(receiverSet);
+    const auto receiverKeys = std::span<const KeyView>(
+        canonicalReceiver.keys.data(),
+        canonicalReceiver.keys.size());
+    const auto receiverPositions = std::span<const std::size_t>(
+        canonicalReceiver.firstPositions.data(),
+        canonicalReceiver.firstPositions.size());
+
     SessionRng rng(
         mConfig.seed ^
-        (static_cast<std::uint64_t>(receiverSet.size()) << 32) ^
+        (static_cast<std::uint64_t>(receiverKeys.size()) << 32) ^
         static_cast<std::uint64_t>(senderSet.size()));
 
     const auto okvsSeed = rng.nextU64();
     const auto valueSeed = rng.nextField();
 
-    ProtocolOkvs receiverOkvs(mConfig, receiverSet.size(), okvsSeed);
-    ProtocolOkvs senderOkvs(mConfig, receiverSet.size(), okvsSeed);
+    ProtocolOkvs receiverOkvs(mConfig, receiverKeys.size(), okvsSeed);
+    ProtocolOkvs senderOkvs(mConfig, receiverKeys.size(), okvsSeed);
     result.okvsSize = receiverOkvs.tableSize();
     result.usedClustering = receiverOkvs.usesClustering();
     result.telemetry.okvsSize = result.okvsSize;
     result.telemetry.usedClustering = result.usedClustering;
 
-    std::vector<GF128> receiverBaseValues(receiverSet.size(), GF128::zero());
+    std::vector<GF128> receiverBaseValues(receiverKeys.size(), GF128::zero());
     std::vector<GF128> senderBaseValues(senderSet.size(), GF128::zero());
     {
         const auto stageStart = Clock::now();
-        for (std::size_t i = 0; i < receiverSet.size(); ++i) {
-            receiverBaseValues[i] = hashToBaseField(receiverSet[i], valueSeed);
+        for (std::size_t i = 0; i < receiverKeys.size(); ++i) {
+            receiverBaseValues[i] = hashToBaseField(receiverKeys[i], valueSeed);
         }
         for (std::size_t i = 0; i < senderSet.size(); ++i) {
             senderBaseValues[i] = hashToBaseField(senderSet[i], valueSeed);
@@ -568,7 +633,7 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
     {
         const auto stageStart = Clock::now();
         p = receiverOkvs.encode(
-            receiverSet,
+            receiverKeys,
             std::span<const GF128>(receiverBaseValues.data(), receiverBaseValues.size()));
         publishStage(
             result,
@@ -607,7 +672,7 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
             onUpdate);
     }
 
-    std::vector<GF128> receiverDecoded(receiverSet.size(), GF128::zero());
+    std::vector<GF128> receiverDecoded(receiverKeys.size(), GF128::zero());
     std::vector<GF128> senderDecoded(senderSet.size(), GF128::zero());
     {
         const auto stageStart = Clock::now();
@@ -619,7 +684,7 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
 
         std::thread receiverThread(
             [receiverSocket = std::move(sockets[0]),
-             receiverSet,
+             receiverKeys,
              tableSize,
              &receiverOkvs,
              &receiverDecoded,
@@ -638,7 +703,7 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
                         std::span<const GF128>(correction.data(), correction.size()));
 
                     receiverOkvs.decode(
-                        receiverSet,
+                        receiverKeys,
                         std::span<GF128>(receiverDecoded.data(), receiverDecoded.size()),
                         std::span<const GF128>(vole.receiverA.data(), vole.receiverA.size()));
                 } catch (const std::exception& ex) {
@@ -749,7 +814,7 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
         std::thread receiverThread(
             [receiverSocket = std::move(sockets[1]),
              tagCount,
-             receiverSet,
+             receiverPositions,
              &receiverDecoded,
              &result,
              &receiverError]() mutable {
@@ -761,11 +826,11 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
                         senderTagSet.insert(tag);
                     }
 
-                    for (std::size_t i = 0; i < receiverSet.size(); ++i) {
-                        if (senderTagSet.contains(hashOutput(receiverDecoded[i]))) {
-                            result.intersectionIndices.push_back(i);
-                        }
-                    }
+                    appendIntersectionIndices(
+                        std::span<const GF128>(receiverDecoded.data(), receiverDecoded.size()),
+                        receiverPositions,
+                        senderTagSet,
+                        result.intersectionIndices);
                 } catch (const std::exception& ex) {
                     receiverError = std::make_exception_ptr(
                         std::runtime_error(

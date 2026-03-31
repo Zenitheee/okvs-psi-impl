@@ -1,39 +1,61 @@
 cmake_minimum_required(VERSION 3.20)
 project(volepsi2 LANGUAGES CXX)
 
-if(NOT TARGET oc::libOTe)
-    list(PREPEND CMAKE_PREFIX_PATH
-        ${CMAKE_CURRENT_SOURCE_DIR}/../volepsi/out/function2/out/build/linux
-        ${CMAKE_CURRENT_SOURCE_DIR}/../volepsi/out/install/linux)
-    set(Boost_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../volepsi/out/install/linux)
-    set(BOOST_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../volepsi/out/install/linux)
-    set(Boost_NO_SYSTEM_PATHS ON)
-    set(NO_SYSTEM_PATH ON)
-    set(SODIUM_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/../volepsi/out/install/linux/include CACHE PATH "" FORCE)
-    set(SODIUM_LIBRARIES ${CMAKE_CURRENT_SOURCE_DIR}/../volepsi/out/install/linux/lib/libsodium.a CACHE FILEPATH "" FORCE)
+option(VOLEPSI2_USE_VENDORED_LIBOTE "Force the vendored thirdparty/libOTe fallback." OFF)
+set(VOLEPSI2_THIRDPARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty" CACHE PATH
+    "Path to vendored third-party dependencies used when libOTe is not installed externally.")
+
+list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+set(VOLEPSI2_LIBOTE_PROVIDER "")
+
+if(TARGET oc::libOTe)
+    set(VOLEPSI2_LIBOTE_PROVIDER "preexisting target")
+elseif(NOT VOLEPSI2_USE_VENDORED_LIBOTE)
     find_package(
         libOTe
         QUIET
         CONFIG
         COMPONENTS
             silent_vole
-            no_asan
-        HINTS
-            ${CMAKE_CURRENT_SOURCE_DIR}/../volepsi/out/libOTe
     )
+
+    if(NOT TARGET oc::libOTe AND NOT TARGET libOTe)
+        # Some libOTe package variants export the target without component checks.
+        find_package(libOTe QUIET CONFIG)
+    endif()
+
+    if(TARGET libOTe AND NOT TARGET oc::libOTe)
+        add_library(oc::libOTe ALIAS libOTe)
+    endif()
+
+    if(TARGET oc::libOTe)
+        set(VOLEPSI2_LIBOTE_PROVIDER "find_package(libOTe)")
+    endif()
+endif()
+
+if(NOT TARGET oc::libOTe)
+    include(VendoredLibOTe)
+    volepsi2_configure_vendored_libote("${VOLEPSI2_THIRDPARTY_DIR}")
+    if(TARGET oc::libOTe)
+        set(VOLEPSI2_LIBOTE_PROVIDER "vendored thirdparty/libOTe")
+    endif()
 endif()
 
 if(NOT TARGET oc::libOTe)
     message(FATAL_ERROR
-        "volepsi2 now requires libOTe for the real VOLE backend. "
-        "Build through volepsi/build.py with VOLE_PSI_ENABLE_ASAN=OFF "
-        "or make a no-asan libOTe install discoverable to CMake.")
+        "volepsi2 requires libOTe for the real VOLE backend. "
+        "Either make an installed libOTe package discoverable via CMAKE_PREFIX_PATH or libOTe_DIR, "
+        "or provide the vendored fallback under ${VOLEPSI2_THIRDPARTY_DIR}.")
 endif()
+
+message(STATUS "volepsi2 will use libOTe from ${VOLEPSI2_LIBOTE_PROVIDER}")
 
 find_package(Threads REQUIRED)
 
 set(VOLEPSI2_SOURCES
     src/gf128.cpp
+    src/input_dataset.cpp
     src/row_hasher.cpp
     src/paxos.cpp
     src/encoder.cpp
@@ -61,17 +83,9 @@ target_compile_definitions(
     PRIVATE VOLEPSI2_DEMO_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/demo")
 
 enable_testing()
-add_executable(volepsi2_tests tests/okvs_roundtrip.cpp)
-target_link_libraries(volepsi2_tests PRIVATE volepsi2)
-add_test(NAME okvs_roundtrip COMMAND volepsi2_tests)
-
-add_executable(gf128_square_test tests/gf128_square_test.cpp)
-target_link_libraries(gf128_square_test PRIVATE volepsi2)
-add_test(NAME gf128_square_test COMMAND gf128_square_test)
-
-add_executable(binned_encoder_test tests/binned_encoder_test.cpp)
-target_link_libraries(binned_encoder_test PRIVATE volepsi2)
-add_test(NAME binned_encoder_test COMMAND binned_encoder_test)
+add_executable(core_test tests/core_test.cpp)
+target_link_libraries(core_test PRIVATE volepsi2)
+add_test(NAME core_test COMMAND core_test)
 
 add_executable(psi_test tests/psi_test.cpp)
 target_link_libraries(psi_test PRIVATE volepsi2)

@@ -44,6 +44,9 @@ const receiverPreview = document.querySelector("#receiver-preview");
 const senderPreview = document.querySelector("#sender-preview");
 const trafficNote = document.querySelector("#traffic-note");
 const presetChips = Array.from(document.querySelectorAll(".preset-chip"));
+const modeChips = Array.from(document.querySelectorAll(".mode-chip"));
+const syntheticControls = document.querySelector("#synthetic-controls");
+const customControls = document.querySelector("#custom-controls");
 
 const receiverSizeField = document.querySelector("#receiver-size");
 const senderSizeField = document.querySelector("#sender-size");
@@ -51,6 +54,10 @@ const intersectionSizeField = document.querySelector("#intersection-size");
 const numThreadsField = document.querySelector("#num-threads");
 const binSizeHintField = document.querySelector("#bin-size-hint");
 const seedField = document.querySelector("#seed");
+const receiverTextField = document.querySelector("#receiver-text");
+const senderTextField = document.querySelector("#sender-text");
+const receiverFileField = document.querySelector("#receiver-file");
+const senderFileField = document.querySelector("#sender-file");
 
 const metricTotalTime = document.querySelector("#metric-total-time");
 const metricTotalTraffic = document.querySelector("#metric-total-traffic");
@@ -103,6 +110,7 @@ let currentSource = null;
 let runCompleted = false;
 let historyStepCounter = 0;
 let selectedPresetKey = "quick";
+let currentMode = "synthetic";
 
 function formatMs(value) {
     if (!Number.isFinite(value)) {
@@ -197,6 +205,29 @@ function currentPresetName() {
     return presetConfigs[selectedPresetKey]?.name || "自定义组合";
 }
 
+function setDatasetMode(mode) {
+    currentMode = mode === "custom" ? "custom" : "synthetic";
+    modeChips.forEach((chip) => {
+        chip.classList.toggle("is-active", chip.dataset.mode === currentMode);
+    });
+    syntheticControls.classList.toggle("is-hidden", currentMode !== "synthetic");
+    customControls.classList.toggle("is-hidden", currentMode !== "custom");
+}
+
+function customTextHasItems(text) {
+    return text
+        .split(/[\n\r,;\t]/)
+        .some((item) => item.trim().length > 0);
+}
+
+async function fillTextareaFromFile(fileInput, textField) {
+    const file = fileInput.files?.[0];
+    if (!file) {
+        return;
+    }
+    textField.value = await file.text();
+}
+
 function syncPresetSelectionFromFields() {
     const payload = payloadFromForm();
     const matchedEntry = Object.entries(presetConfigs).find(([, preset]) =>
@@ -274,6 +305,13 @@ function validatePayload(payload) {
     }
     if (Number(payload.numThreads) < 1) {
         return "线程数必须大于 0。";
+    }
+    return "";
+}
+
+function validateCustomInputs() {
+    if (!customTextHasItems(receiverTextField.value) && !customTextHasItems(senderTextField.value)) {
+        return "至少需要提供一侧的有效数据项，不能两侧都为空。";
     }
     return "";
 }
@@ -432,9 +470,11 @@ function closeStream() {
     }
 }
 
-function startRun() {
+async function startRun() {
     const payload = payloadFromForm();
-    const validationError = validatePayload(payload);
+    const validationError = currentMode === "custom"
+        ? validateCustomInputs()
+        : validatePayload(payload);
     if (validationError) {
         setStatus("error", "输入无效");
         pushHistory("参数校验失败", validationError);
@@ -447,20 +487,69 @@ function startRun() {
     runCompleted = false;
     runButton.disabled = true;
     setStatus("running", "连接中");
-    pushHistory(
-        "运行已创建",
-        `使用“${currentPresetName()}”预设：接收方 ${formatInteger(payload.receiverSize)} 项，发送方 ${formatInteger(payload.senderSize)} 项，交集 ${formatInteger(payload.intersectionSize)} 项，线程数 ${payload.numThreads}，聚类阈值 ${formatInteger(payload.binSizeHint)}，随机种子 ${getSeedLabel()}。`);
 
-    const params = new URLSearchParams(payload);
-    currentSource = new EventSource(`/api/run?${params.toString()}`);
+    let streamUrl = "";
+    if (currentMode === "custom") {
+        pushHistory(
+            "数据预处理中",
+            `正在上传并整理你提供的真实数据集，线程数 ${payload.numThreads}，聚类阈值 ${formatInteger(payload.binSizeHint)}，随机种子 ${getSeedLabel()}。`);
+
+        try {
+            const sessionBody = new URLSearchParams({
+                receiverText: receiverTextField.value,
+                senderText: senderTextField.value,
+            });
+            const response = await fetch("/api/session", {
+                method: "POST",
+                body: sessionBody,
+            });
+            const responseText = await response.text();
+            if (!response.ok) {
+                throw new Error(responseText.trim() || "数据预处理失败。");
+            }
+
+            const session = JSON.parse(responseText);
+            pushHistory(
+                "数据预处理完成",
+                `接收方 ${formatInteger(session.receiverRawCount)} 条输入整理为 ${formatInteger(session.receiverSize)} 个唯一项，发送方 ${formatInteger(session.senderRawCount)} 条输入整理为 ${formatInteger(session.senderSize)} 个唯一项，预处理交集规模 ${formatInteger(session.intersectionSize)}。`);
+
+            const params = new URLSearchParams({
+                token: session.token,
+                numThreads: payload.numThreads,
+                binSizeHint: payload.binSizeHint,
+                seed: payload.seed,
+            });
+            streamUrl = `/api/run?${params.toString()}`;
+        } catch (error) {
+            setStatus("error", "准备失败");
+            pushHistory("数据预处理失败", error instanceof Error ? error.message : "未知错误。");
+            runButton.disabled = false;
+            return;
+        }
+    } else {
+        pushHistory(
+            "运行已创建",
+            `使用“${currentPresetName()}”预设：接收方 ${formatInteger(payload.receiverSize)} 项，发送方 ${formatInteger(payload.senderSize)} 项，交集 ${formatInteger(payload.intersectionSize)} 项，线程数 ${payload.numThreads}，聚类阈值 ${formatInteger(payload.binSizeHint)}，随机种子 ${getSeedLabel()}。`);
+        const params = new URLSearchParams(payload);
+        streamUrl = `/api/run?${params.toString()}`;
+    }
+
+    currentSource = new EventSource(streamUrl);
 
     currentSource.addEventListener("ready", (event) => {
         const data = JSON.parse(event.data);
+        const datasetSummary = data.datasetSummary || {};
         trafficNote.textContent = localizedTrafficNote;
         setStatus("running", "已连接");
-        pushHistory(
-            "本地双方连接完成",
-            `接收方 ${Number(data.receiverSize).toLocaleString()} 项、发送方 ${Number(data.senderSize).toLocaleString()} 项的本地执行通道已经建立，准备开始求交流程。`);
+        if (datasetSummary.mode === "custom") {
+            pushHistory(
+                "自定义数据已装载",
+                `接收方 ${Number(data.receiverSize).toLocaleString()} 个唯一项、发送方 ${Number(data.senderSize).toLocaleString()} 个唯一项已经进入协议流程。`);
+        } else {
+            pushHistory(
+                "本地双方连接完成",
+                `接收方 ${Number(data.receiverSize).toLocaleString()} 项、发送方 ${Number(data.senderSize).toLocaleString()} 项的本地执行通道已经建立，准备开始求交流程。`);
+        }
     });
 
     currentSource.addEventListener("progress", (event) => {
@@ -513,6 +602,12 @@ for (const chip of presetChips) {
     });
 }
 
+for (const chip of modeChips) {
+    chip.addEventListener("click", () => {
+        setDatasetMode(chip.dataset.mode);
+    });
+}
+
 for (const field of [
     receiverSizeField,
     senderSizeField,
@@ -526,10 +621,19 @@ for (const field of [
     });
 }
 
+receiverFileField.addEventListener("change", async () => {
+    await fillTextareaFromFile(receiverFileField, receiverTextField);
+});
+
+senderFileField.addEventListener("change", async () => {
+    await fillTextareaFromFile(senderFileField, senderTextField);
+});
+
 form.addEventListener("submit", (event) => {
     event.preventDefault();
-    startRun();
+    void startRun();
 });
 
 resetDashboard();
 applyPreset("quick");
+setDatasetMode("synthetic");

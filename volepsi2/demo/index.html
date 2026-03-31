@@ -40,46 +40,80 @@
                     </button>
                 </div>
 
-                <div class="preset-strip" aria-label="运行预设">
-                    <button class="preset-chip is-active" type="button" data-preset="quick">快速演示</button>
-                    <button class="preset-chip" type="button" data-preset="balanced">均衡中型</button>
-                    <button class="preset-chip" type="button" data-preset="throughput">高吞吐</button>
-                    <button class="preset-chip" type="button" data-preset="million">百万级</button>
+                <div class="mode-strip" aria-label="数据来源">
+                    <button class="mode-chip is-active" type="button" data-mode="synthetic">内置样本</button>
+                    <button class="mode-chip" type="button" data-mode="custom">自定义数据</button>
+                </div>
+
+                <div id="synthetic-controls" class="mode-panel">
+                    <div class="preset-strip" aria-label="运行预设">
+                        <button class="preset-chip is-active" type="button" data-preset="quick">快速演示</button>
+                        <button class="preset-chip" type="button" data-preset="balanced">均衡中型</button>
+                        <button class="preset-chip" type="button" data-preset="throughput">高吞吐</button>
+                        <button class="preset-chip" type="button" data-preset="million">百万级</button>
+                    </div>
+
+                    <div class="field-grid">
+                        <label class="field">
+                            <span>接收方规模</span>
+                            <select id="receiver-size" name="receiverSize">
+                                <option value="4096" selected>2^12 / 4,096</option>
+                                <option value="16384">2^14 / 16,384</option>
+                                <option value="65536">2^16 / 65,536</option>
+                                <option value="262144">2^18 / 262,144</option>
+                                <option value="1048576">2^20 / 1,048,576</option>
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>发送方规模</span>
+                            <select id="sender-size" name="senderSize">
+                                <option value="4096" selected>2^12 / 4,096</option>
+                                <option value="16384">2^14 / 16,384</option>
+                                <option value="65536">2^16 / 65,536</option>
+                                <option value="262144">2^18 / 262,144</option>
+                                <option value="1048576">2^20 / 1,048,576</option>
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>目标交集规模</span>
+                            <select id="intersection-size" name="intersectionSize">
+                                <option value="256">256</option>
+                                <option value="512" selected>512</option>
+                                <option value="1024">1,024</option>
+                                <option value="4096">4,096</option>
+                                <option value="16384">16,384</option>
+                                <option value="65536">65,536</option>
+                                <option value="262144">262,144</option>
+                            </select>
+                        </label>
+                    </div>
+                </div>
+
+                <div id="custom-controls" class="mode-panel custom-panel is-hidden">
+                    <p class="custom-note">
+                        粘贴或导入真实数据集后，后端会自动做分隔、去重、空白过滤和交集规模预处理。
+                    </p>
+                    <div class="custom-grid">
+                        <label class="field field-wide">
+                            <span>接收方集合</span>
+                            <textarea id="receiver-text" name="receiverText" rows="8" placeholder="每行一个元素，或使用逗号 / 分号 / Tab 分隔。"></textarea>
+                        </label>
+                        <label class="field field-wide">
+                            <span>发送方集合</span>
+                            <textarea id="sender-text" name="senderText" rows="8" placeholder="支持与接收方相同的分隔方式，系统会自动去重。"></textarea>
+                        </label>
+                        <label class="field">
+                            <span>接收方文件</span>
+                            <input id="receiver-file" type="file" accept=".txt,.csv,text/plain,text/csv">
+                        </label>
+                        <label class="field">
+                            <span>发送方文件</span>
+                            <input id="sender-file" type="file" accept=".txt,.csv,text/plain,text/csv">
+                        </label>
+                    </div>
                 </div>
 
                 <div class="field-grid">
-                    <label class="field">
-                        <span>接收方规模</span>
-                        <select id="receiver-size" name="receiverSize">
-                            <option value="4096" selected>2^12 / 4,096</option>
-                            <option value="16384">2^14 / 16,384</option>
-                            <option value="65536">2^16 / 65,536</option>
-                            <option value="262144">2^18 / 262,144</option>
-                            <option value="1048576">2^20 / 1,048,576</option>
-                        </select>
-                    </label>
-                    <label class="field">
-                        <span>发送方规模</span>
-                        <select id="sender-size" name="senderSize">
-                            <option value="4096" selected>2^12 / 4,096</option>
-                            <option value="16384">2^14 / 16,384</option>
-                            <option value="65536">2^16 / 65,536</option>
-                            <option value="262144">2^18 / 262,144</option>
-                            <option value="1048576">2^20 / 1,048,576</option>
-                        </select>
-                    </label>
-                    <label class="field">
-                        <span>目标交集规模</span>
-                        <select id="intersection-size" name="intersectionSize">
-                            <option value="256">256</option>
-                            <option value="512" selected>512</option>
-                            <option value="1024">1,024</option>
-                            <option value="4096">4,096</option>
-                            <option value="16384">16,384</option>
-                            <option value="65536">65,536</option>
-                            <option value="262144">262,144</option>
-                        </select>
-                    </label>
                     <label class="field">
                         <span>线程数</span>
                         <select id="num-threads" name="numThreads">

@@ -42,6 +42,7 @@ struct PsiTelemetry {
 using PsiTelemetryCallback = std::function<void(const PsiTelemetry&)>;
 
 struct PsiResult {
+    // Indices of the first matching occurrences in the original receiver input.
     std::vector<std::size_t> intersectionIndices;
     std::size_t okvsSize = 0;
     bool usedClustering = false;
