@@ -2,6 +2,8 @@
 
 #include "hash_utils.h"
 #include "okvs/binned_encoder.h"
+#include "cryptoTools/Common/Defines.h"
+#include "cryptoTools/Crypto/PRNG.h"
 
 #if OKVS_ENABLE_REAL_VOLE
 #include "coproto/Socket/LocalAsyncSock.h"
@@ -145,20 +147,28 @@ CanonicalReceiverSet canonicalizeReceiverSet(std::span<const KeyView> receiverSe
 
 class SessionRng {
 public:
-    explicit SessionRng(std::uint64_t seed)
-        : mState(seed) {}
+    static SessionRng fresh() {
+        return SessionRng(osuCrypto::sysRandomSeed());
+    }
+
+    static SessionRng deterministic(std::uint64_t seed) {
+        return SessionRng(osuCrypto::toBlock(0x7073692d73656564ULL, seed));
+    }
+
+    explicit SessionRng(const osuCrypto::block& seed)
+        : mPrng(seed) {}
 
     std::uint64_t nextU64() {
-        mState += 0x9e3779b97f4a7c15ULL;
-        return internal::splitMix64(mState);
+        return mPrng.get<std::uint64_t>();
     }
 
     GF128 nextField() {
-        return GF128(nextU64(), nextU64());
+        const auto value = mPrng.get<osuCrypto::block>();
+        return GF128(value.get<std::uint64_t>(1), value.get<std::uint64_t>(0));
     }
 
 private:
-    std::uint64_t mState;
+    osuCrypto::PRNG mPrng;
 };
 
 struct VoleCorrelation {
@@ -181,11 +191,16 @@ GF128 hashToBaseField(KeyView key, const GF128& salt) {
     return internal::hashBytesToField(
         asBytes(key),
         salt.lo() ^ kHBSeed0,
-        salt.hi() ^ kHBSeed1);
+        salt.hi() ^ kHBSeed1,
+        internal::HashDomain::PsiBaseField);
 }
 
 GF128 hashOutput(const GF128& value) {
-    return internal::hashFieldToField(value, kHOSeed0, kHOSeed1);
+    return internal::hashFieldToField(
+        value,
+        kHOSeed0,
+        kHOSeed1,
+        internal::HashDomain::PsiOutput);
 }
 
 void appendIntersectionIndices(std::span<const GF128> receiverDecoded,
@@ -374,6 +389,7 @@ void publishStage(PsiResult& result,
     result.telemetry.intersectionSize = result.intersectionIndices.size();
     result.telemetry.usedClustering = result.usedClustering;
     result.telemetry.usedRealVole = result.usedRealVole;
+    result.telemetry.usedDeterministicSeed = result.usedDeterministicSeed;
     if (onUpdate) {
         onUpdate(result.telemetry);
     }
@@ -395,6 +411,8 @@ PsiResult SemiHonestPsi::run(std::span<const KeyView> receiverSet,
     PsiResult result;
     result.telemetry.receiverSetSize = receiverSet.size();
     result.telemetry.senderSetSize = senderSet.size();
+    result.usedDeterministicSeed = mConfig.deterministicSeedEnabled;
+    result.telemetry.usedDeterministicSeed = result.usedDeterministicSeed;
     const auto protocolStart = Clock::now();
     if (receiverSet.empty()) {
         result.telemetry.totalDurationMs = elapsedMs(protocolStart, Clock::now());
@@ -409,10 +427,12 @@ PsiResult SemiHonestPsi::run(std::span<const KeyView> receiverSet,
         canonicalReceiver.firstPositions.data(),
         canonicalReceiver.firstPositions.size());
 
-    SessionRng rng(
-        mConfig.seed ^
-        (static_cast<std::uint64_t>(receiverKeys.size()) << 32) ^
-        static_cast<std::uint64_t>(senderSet.size()));
+    SessionRng rng = mConfig.deterministicSeedEnabled
+        ? SessionRng::deterministic(
+            mConfig.seed ^
+            (static_cast<std::uint64_t>(receiverKeys.size()) << 32) ^
+            static_cast<std::uint64_t>(senderSet.size()))
+        : SessionRng::fresh();
 
     const auto okvsSeed = rng.nextU64();
     const auto valueSeed = rng.nextField();
@@ -575,6 +595,8 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
     PsiResult result;
     result.telemetry.receiverSetSize = receiverSet.size();
     result.telemetry.senderSetSize = senderSet.size();
+    result.usedDeterministicSeed = mConfig.deterministicSeedEnabled;
+    result.telemetry.usedDeterministicSeed = result.usedDeterministicSeed;
     const auto protocolStart = Clock::now();
     if (receiverSet.empty()) {
         result.telemetry.totalDurationMs = elapsedMs(protocolStart, Clock::now());
@@ -589,10 +611,12 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
         canonicalReceiver.firstPositions.data(),
         canonicalReceiver.firstPositions.size());
 
-    SessionRng rng(
-        mConfig.seed ^
-        (static_cast<std::uint64_t>(receiverKeys.size()) << 32) ^
-        static_cast<std::uint64_t>(senderSet.size()));
+    SessionRng rng = mConfig.deterministicSeedEnabled
+        ? SessionRng::deterministic(
+            mConfig.seed ^
+            (static_cast<std::uint64_t>(receiverKeys.size()) << 32) ^
+            static_cast<std::uint64_t>(senderSet.size()))
+        : SessionRng::fresh();
 
     const auto okvsSeed = rng.nextU64();
     const auto valueSeed = rng.nextField();

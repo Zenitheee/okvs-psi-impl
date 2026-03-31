@@ -91,6 +91,7 @@ int main() {
     };
 
     PsiConfig psiConfig;
+    psiConfig.deterministicSeedEnabled = true;
     psiConfig.seed = 0xabcdef1234567890ULL;
     SemiHonestPsi psi(psiConfig);
 

@@ -5,7 +5,7 @@
 1. `volepsi2` 现在到底跑到了什么程度？
 2. 它和上游参考实现 `volepsi` 相比处于什么位置？
 
-所有命令都从仓库根目录执行，结果记录于 2026-03-27，使用本地已有构建产物。由于硬件、编译器、系统负载和网络环境都与论文不同，这里的数据**不是**论文 Table 2 的绝对复现，而是当前项目的本地结构化证据。
+所有命令都从仓库根目录执行，结果初始记录于 2026-03-27，并于 2026-03-31 追加 `2^20` PSI 数据，使用本地已有构建产物。由于硬件、编译器、系统负载和网络环境都与论文不同，这里的数据**不是**论文 Table 2 的绝对复现，而是当前项目的本地结构化证据。
 
 ## Commands
 
@@ -29,6 +29,8 @@
 ./volepsi2/build/volepsi2_bench psi -nn 12 -t 3 -nt 4 -bs 2048
 ./volepsi2/build/volepsi2_bench psi -nn 14 -t 3 -nt 1
 ./volepsi2/build/volepsi2_bench psi -nn 14 -t 3 -nt 4
+./volepsi2/build/volepsi2_bench psi -nn 20 -t 3 -nt 1
+./volepsi2/build/volepsi2_bench psi -nn 20 -t 3 -nt 4
 ```
 
 ### Upstream `volepsi` historical PSI baseline
@@ -63,12 +65,14 @@
 | `2^12 = 4096` | 4 | yes (`-bs 2048`) | 209.149 | 5886 |
 | `2^14 = 16384` | 1 | no | 731.280 | 20193 |
 | `2^14 = 16384` | 4 | no | 685.094 | 20193 |
+| `2^20 = 1048576` | 1 | yes (default `bin_size_hint = 16384`) | 22006.935 | 1355968 |
+| `2^20 = 1048576` | 4 | yes (default `bin_size_hint = 16384`) | 11764.066 | 1355968 |
 
 观察：
 
-- 当前 `volepsi2` 已能稳定完成 `2^10` 到 `2^14` 的本地 PSI benchmark。
-- 多线程在 `n = 2^12` 和 `2^14` 上带来一定收益，但没有论文中那样显著。
-- clustered OKVS 的收益在完整 PSI 中还没有完全释放出来，说明当前实现的瓶颈不只在 OKVS。
+- 当前 `volepsi2` 已能稳定完成 `2^10` 到 `2^20` 的本地 PSI benchmark。
+- `n = 2^20` 时默认 `bin_size_hint = 16384` 会触发 clustered OKVS，因此这两条数据反映的是默认配置下的完整 PSI 路径，而不是强行关闭 clustering 的结果。
+- 多线程在 `n = 2^12` 和 `2^14` 上带来一定收益，而在 `n = 2^20` 上收益明显扩大，总时间从 `22006.935 ms` 降到 `11764.066 ms`。
 
 ### Upstream `volepsi` historical PSI baseline
 

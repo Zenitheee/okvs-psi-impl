@@ -214,6 +214,7 @@ std::string telemetryToJson(const okvs::PsiTelemetry& telemetry) {
            << "\"intersectionSize\":" << telemetry.intersectionSize << ','
            << "\"usedClustering\":" << jsonBool(telemetry.usedClustering) << ','
            << "\"usedRealVole\":" << jsonBool(telemetry.usedRealVole) << ','
+           << "\"usedDeterministicSeed\":" << jsonBool(telemetry.usedDeterministicSeed) << ','
            << "\"stages\":[";
 
     for (std::size_t i = 0; i < telemetry.stages.size(); ++i) {
@@ -332,6 +333,7 @@ std::string resultPayloadToJson(const DemoRequest& request,
            << "\"seed\":" << request.seed << ','
            << "\"usedClustering\":" << jsonBool(result.usedClustering) << ','
            << "\"usedRealVole\":" << jsonBool(result.usedRealVole) << ','
+           << "\"usedDeterministicSeed\":" << jsonBool(result.usedDeterministicSeed) << ','
            << "\"trafficNote\":" << jsonString(kTrafficNote) << ','
            << "\"datasetSummary\":" << datasetSummaryToJson(resolved) << ','
            << "\"receiverPreview\":" << stringArrayToJson(receiverPreview) << ','
@@ -806,6 +808,7 @@ void runDemoStream(int fd, DemoRequest request) {
         okvs::PsiConfig config;
         config.binSizeHint = request.binSizeHint;
         config.numThreads = request.numThreads;
+        config.deterministicSeedEnabled = true;
         config.seed = request.seed;
 
         okvs::SemiHonestPsi psi(config);

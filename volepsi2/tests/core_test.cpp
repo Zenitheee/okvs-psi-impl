@@ -1,7 +1,9 @@
 #include "okvs/binned_encoder.h"
 #include "okvs/encoder.h"
 #include "okvs/input_dataset.h"
+#include "okvs/row_hasher.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <random>
@@ -16,6 +18,7 @@ using okvs::GF128;
 using okvs::KeyView;
 using okvs::OkvsConfig;
 using okvs::OkvsEncoder;
+using okvs::RowHasher;
 
 std::vector<KeyView> makeKeyViews(const std::vector<std::string>& keys) {
     std::vector<KeyView> views(keys.size());
@@ -288,6 +291,65 @@ bool runInputDatasetPreprocessingCase() {
     return true;
 }
 
+bool runRowHasherSparseSamplingCase() {
+    constexpr std::size_t sparseColumns = 17;
+    constexpr std::size_t denseColumns = 8;
+    constexpr std::size_t weight = 3;
+    RowHasher hasher(sparseColumns, denseColumns, weight, 0x1122334455667788ULL);
+
+    for (std::size_t i = 0; i < 2048; ++i) {
+        const auto key = "row-hasher-key-" + std::to_string(i);
+        const auto keyBytes = std::span<const std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(key.data()),
+            key.size());
+        const auto row = hasher.generate(keyBytes);
+
+        if (row.sparse.size() != weight) {
+            std::cerr << "row hasher sparse weight mismatch\n";
+            return false;
+        }
+        if (row.dense.size() != denseColumns) {
+            std::cerr << "row hasher dense width mismatch\n";
+            return false;
+        }
+        if (!std::is_sorted(row.sparse.begin(), row.sparse.end())) {
+            std::cerr << "row hasher sparse indices should be sorted\n";
+            return false;
+        }
+        if (std::adjacent_find(row.sparse.begin(), row.sparse.end()) != row.sparse.end()) {
+            std::cerr << "row hasher sparse indices should be unique\n";
+            return false;
+        }
+        for (const auto col : row.sparse) {
+            if (col >= sparseColumns) {
+                std::cerr << "row hasher sparse index out of range\n";
+                return false;
+            }
+        }
+    }
+
+    RowHasher nearFullHasher(5, 0, 5, 0x8877665544332211ULL);
+    for (std::size_t i = 0; i < 128; ++i) {
+        const auto key = "row-hasher-full-domain-" + std::to_string(i);
+        const auto keyBytes = std::span<const std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(key.data()),
+            key.size());
+        const auto row = nearFullHasher.generate(keyBytes);
+        if (row.sparse.size() != 5) {
+            std::cerr << "row hasher full-domain weight mismatch\n";
+            return false;
+        }
+        for (std::size_t col = 0; col < row.sparse.size(); ++col) {
+            if (row.sparse[col] != col) {
+                std::cerr << "row hasher full-domain sample should cover every sparse column\n";
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -309,6 +371,9 @@ int main() {
         return 1;
     }
     if (!runInputDatasetPreprocessingCase()) {
+        return 1;
+    }
+    if (!runRowHasherSparseSamplingCase()) {
         return 1;
     }
 

@@ -107,7 +107,8 @@ bool validateTelemetry(const char* label,
     if (telemetry.okvsSize != result.okvsSize ||
         telemetry.intersectionSize != result.intersectionIndices.size() ||
         telemetry.usedClustering != result.usedClustering ||
-        telemetry.usedRealVole != result.usedRealVole) {
+        telemetry.usedRealVole != result.usedRealVole ||
+        telemetry.usedDeterministicSeed != result.usedDeterministicSeed) {
         std::cerr << label << " failed: telemetry summary does not match result\n";
         return false;
     }
@@ -204,6 +205,11 @@ bool runCase(const char* label,
         return false;
     }
 
+    if (result.usedDeterministicSeed != config.deterministicSeedEnabled) {
+        std::cerr << label << " failed: unexpected seed mode\n";
+        return false;
+    }
+
     if (!receiver.empty() && result.okvsSize == 0) {
         std::cerr << label << " failed: non-empty receiver produced zero-sized OKVS\n";
         return false;
@@ -263,13 +269,26 @@ bool runThreadParityCase(const char* label,
         return false;
     }
 
+    if (singleThreadResult.usedDeterministicSeed != multiThreadResult.usedDeterministicSeed) {
+        std::cerr << label << " failed: thread-count changed the seed mode\n";
+        return false;
+    }
+
     return true;
 }
 
 } // namespace
 
 int main() {
+    okvs::PsiConfig freshConfig;
+    const auto freshReceiver = makeKeys("fresh-default-recv", 12);
+    const auto freshSender = freshReceiver;
+    if (!runCase("fresh_random_default", freshReceiver, freshSender, freshConfig, false)) {
+        return 1;
+    }
+
     okvs::PsiConfig config;
+    config.deterministicSeedEnabled = true;
     config.seed = 0x123456789abcdef0ULL;
 
     const std::vector<std::string> emptyReceiver;

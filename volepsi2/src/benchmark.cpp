@@ -250,6 +250,7 @@ void verifyDecode(std::span<const okvs::GF128> decoded,
     okvs::PsiConfig config;
     config.binSizeHint = options.binSizeHint;
     config.numThreads = options.numThreads;
+    config.deterministicSeedEnabled = true;
     config.seed = trialSeed;
 
     okvs::SemiHonestPsi psi(config);

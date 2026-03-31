@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-`volepsi2/` is the main implementation and the final Web UI deliverable. Public headers live in `volepsi2/include/okvs/`, core implementations are in `volepsi2/src/`, demo assets are in `volepsi2/demo/`, and focused regression tests are in `volepsi2/tests/`. Treat upstream `volepsi` as historical reference context only, not as a required sibling tree. Keep `paper.md` as the algorithm reference and `EVALUATION.md` as the benchmark record. Ignore generated output in `volepsi2/build/`.
+`volepsi2/` is the main implementation and the final Web UI deliverable. Public headers live in `volepsi2/include/okvs/`, core implementations are in `volepsi2/src/`, demo assets are in `volepsi2/demo/`, and focused regression tests are in `volepsi2/tests/`. Keep `paper.md` as the algorithm reference and `EVALUATION.md` as the benchmark record. Ignore generated output in `volepsi2/build/`.
 
 ## Build, Test, and Development Commands
 

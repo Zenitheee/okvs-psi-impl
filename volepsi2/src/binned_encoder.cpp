@@ -1,5 +1,7 @@
 #include "okvs/binned_encoder.h"
 
+#include "hash_utils.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -10,13 +12,6 @@
 
 namespace okvs {
 namespace {
-
-inline std::uint64_t splitMix64(std::uint64_t x) {
-    x += 0x9e3779b97f4a7c15ull;
-    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull;
-    x = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
-    return x ^ (x >> 31);
-}
 
 } // namespace
 
@@ -65,12 +60,14 @@ std::size_t BinnedOkvsEncoder::computeItemsPerBin(std::size_t numItems, std::siz
 }
 
 std::uint64_t BinnedOkvsEncoder::hashKey(KeyView key, std::uint64_t seed) {
-    std::uint64_t h = 1469598103934665603ull ^ seed;
-    for (std::size_t i = 0; i < key.size; ++i) {
-        h ^= static_cast<std::uint64_t>(key.data[i]);
-        h *= 1099511628211ull;
-    }
-    return splitMix64(h);
+    const auto bytes = (key.size == 0 || key.data == nullptr)
+        ? std::span<const std::uint8_t>()
+        : std::span<const std::uint8_t>(key.data, key.size);
+    return internal::hashBytesToU64(
+        bytes,
+        seed,
+        0x38b34ae59d1228d9ULL,
+        internal::HashDomain::BinnedKey);
 }
 
 void BinnedOkvsEncoder::encode(std::span<const KeyView> keys,

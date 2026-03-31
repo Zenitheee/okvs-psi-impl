@@ -15,6 +15,7 @@ struct PsiConfig {
     OkvsConfig okvs;
     std::size_t binSizeHint = 1 << 14;
     std::size_t numThreads = 1;
+    bool deterministicSeedEnabled = false;
     std::uint64_t seed = 0xc0ffee1234567890ULL;
 };
 
@@ -37,6 +38,7 @@ struct PsiTelemetry {
     std::size_t intersectionSize = 0;
     bool usedClustering = false;
     bool usedRealVole = false;
+    bool usedDeterministicSeed = false;
 };
 
 using PsiTelemetryCallback = std::function<void(const PsiTelemetry&)>;
@@ -47,6 +49,7 @@ struct PsiResult {
     std::size_t okvsSize = 0;
     bool usedClustering = false;
     bool usedRealVole = false;
+    bool usedDeterministicSeed = false;
     PsiTelemetry telemetry;
 };
 

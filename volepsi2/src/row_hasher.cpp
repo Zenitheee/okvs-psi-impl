@@ -3,12 +3,12 @@
 #include "hash_utils.h"
 
 #include <algorithm>
-#include <iterator>
-#include <stdexcept>
 #include <cstring>
-#include <wmmintrin.h>
+#include <limits>
+#include <stdexcept>
 #include <emmintrin.h>
 #include <smmintrin.h>
+#include <wmmintrin.h>
 
 namespace okvs {
 
@@ -23,6 +23,14 @@ __m128i aes_expand(__m128i key) {
     key = _mm_xor_si128(key, _mm_slli_si128(key, 4));
     key = _mm_xor_si128(key, _mm_slli_si128(key, 4));
     return _mm_xor_si128(key, keygen);
+}
+
+__m128i aes_encrypt(__m128i block, const std::array<__m128i, 11>& roundKeys) {
+    __m128i state = _mm_xor_si128(block, roundKeys[0]);
+    for (int i = 1; i < 10; ++i) {
+        state = _mm_aesenc_si128(state, roundKeys[i]);
+    }
+    return _mm_aesenclast_si128(state, roundKeys[10]);
 }
 
 } // namespace
@@ -56,6 +64,9 @@ RowData RowHasher::generate(std::span<const std::uint8_t> keyBytes) const {
     if (mMPrime != 0 && mMPrime < mWeight) {
         throw std::runtime_error("Sparse column count smaller than row weight.");
     }
+    if (mMPrime > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error("Sparse column count exceeds 32-bit row index representation.");
+    }
 
     RowData row;
     row.sparse.reserve(mWeight);
@@ -63,125 +74,76 @@ RowData RowHasher::generate(std::span<const std::uint8_t> keyBytes) const {
         row.dense.resize(mDenseCols);
     }
 
-    // 1. Hash the keyBytes to a 128-bit block to be used as plaintext
-    // Simple mixing if keyBytes is not 16 bytes.
-    // Ideally we assume keyBytes is 16 bytes.
-    __m128i block = _mm_setzero_si128();
-    if (keyBytes.size() == 16) {
-        block = _mm_loadu_si128(reinterpret_cast<const __m128i*>(keyBytes.data()));
-    } else {
-        const auto words = internal::hashBytesTo128(
-            keyBytes,
-            0x6a09e667f3bcc909ULL,
-            0xbb67ae8584caa73bULL);
-        alignas(16) std::array<std::uint64_t, 2> hashedBlock = {words[0], words[1]};
-        block = _mm_load_si128(reinterpret_cast<const __m128i*>(hashedBlock.data()));
-    }
+    // 1. Compress arbitrary-length key material to one pseudorandom 128-bit block.
+    const auto words = internal::hashBytesTo128(
+        keyBytes,
+        0x6a09e667f3bcc909ULL,
+        0xbb67ae8584caa73bULL,
+        internal::HashDomain::RowKeyCompression);
+    alignas(16) std::array<std::uint64_t, 2> hashedBlock = {words[0], words[1]};
+    __m128i block = _mm_load_si128(reinterpret_cast<const __m128i*>(hashedBlock.data()));
 
-    // 2. Encrypt the block to get randomness
-    // AES-ENC
-    __m128i state = _mm_xor_si128(block, mRoundKeys[0]);
-    for (int i = 1; i < 10; ++i) {
-        state = _mm_aesenc_si128(state, mRoundKeys[i]);
-    }
-    state = _mm_aesenclast_si128(state, mRoundKeys[10]);
+    // 2. Encrypt the block to get randomness.
+    __m128i state = aes_encrypt(block, mRoundKeys);
 
-    // state now contains 128 bits of pseudo-randomness
-    
-    // 3. Extract sparse indices
-    // We need 'mWeight' distinct indices.
-    // Assuming mWeight is small (e.g. 3).
-    // We can interpret the 128-bit output as a sequence of 32-bit integers.
-    // But we need to ensure they are distinct.
-    
-    uint64_t randLow = _mm_cvtsi128_si64(state);
-    uint64_t randHigh = _mm_extract_epi64(state, 1);
-    
-    // Strategy: Use 32-bit chunks.
-    // Note: This simple extraction might be biased if mMPrime is not power of 2.
-    // For high performance, we accept slight bias or use lemire's fastrange/rejection.
-    // Given the constraints, simple modulo is often "good enough" for benchmarks,
-    // but we should check duplicates.
-    
-    // Re-hash if we run out of entropy or need more?
-    // For weight=3, we need 3 indices.
-    // We have 4x32 bits.
-    
-    std::uint32_t r[4];
-    r[0] = static_cast<std::uint32_t>(randLow);
-    r[1] = static_cast<std::uint32_t>(randLow >> 32);
-    r[2] = static_cast<std::uint32_t>(randHigh);
-    r[3] = static_cast<std::uint32_t>(randHigh >> 32);
-    
-    std::size_t found = 0;
-    
-    // To handle collisions efficiently without loop:
-    // Try first 3. If distinct, good.
-    // If collision, swap with 4th.
-    // If still collision, re-encrypt state (as a PRNG step).
-    
-    // Simplified robust loop:
-    while (found < mWeight && mMPrime != 0) {
-        for (int i = 0; i < 4 && found < mWeight; ++i) {
-            uint32_t candidate = r[i] % mMPrime;
-            bool duplicate = false;
-            for (std::size_t k = 0; k < found; ++k) {
-                if (row.sparse[k] == candidate) {
-                    duplicate = true;
-                    break;
+    // 3. Extract sparse indices as an unbiased sample without replacement.
+    std::array<std::uint32_t, 4> randomWords{};
+    std::size_t randomWordIndex = randomWords.size();
+    auto refillRandomWords = [&]() {
+        const std::uint64_t randLow = _mm_cvtsi128_si64(state);
+        const std::uint64_t randHigh = _mm_extract_epi64(state, 1);
+        randomWords[0] = static_cast<std::uint32_t>(randLow);
+        randomWords[1] = static_cast<std::uint32_t>(randLow >> 32);
+        randomWords[2] = static_cast<std::uint32_t>(randHigh);
+        randomWords[3] = static_cast<std::uint32_t>(randHigh >> 32);
+        randomWordIndex = 0;
+        state = aes_encrypt(state, mRoundKeys);
+    };
+    auto nextUint32 = [&]() -> std::uint32_t {
+        if (randomWordIndex == randomWords.size()) {
+            refillRandomWords();
+        }
+        return randomWords[randomWordIndex++];
+    };
+
+    if (mMPrime != 0) {
+        const auto range = static_cast<std::uint64_t>(mMPrime);
+        const auto limit = (std::uint64_t{1} << 32) - ((std::uint64_t{1} << 32) % range);
+
+        auto drawSparseIndex = [&]() -> std::uint32_t {
+            while (true) {
+                const auto sample = static_cast<std::uint64_t>(nextUint32());
+                if (sample < limit) {
+                    return static_cast<std::uint32_t>(sample % range);
                 }
             }
-            if (!duplicate) {
+        };
+
+        while (row.sparse.size() < mWeight) {
+            const auto candidate = drawSparseIndex();
+            if (std::find(row.sparse.begin(), row.sparse.end(), candidate) == row.sparse.end()) {
                 row.sparse.push_back(candidate);
-                found++;
             }
-        }
-        
-        if (found < mWeight) {
-            // Need more randomness
-            state = _mm_aesenc_si128(state, mRoundKeys[0]); // Re-encrypt state as next random block
-            randLow = _mm_cvtsi128_si64(state);
-            randHigh = _mm_extract_epi64(state, 1);
-            r[0] = static_cast<std::uint32_t>(randLow);
-            r[1] = static_cast<std::uint32_t>(randLow >> 32);
-            r[2] = static_cast<std::uint32_t>(randHigh);
-            r[3] = static_cast<std::uint32_t>(randHigh >> 32);
         }
     }
     std::sort(row.sparse.begin(), row.sparse.end());
 
     // 4. Generate Dense Part
     if (mDenseCols > 0) {
-        // We need a base for the powers.
-        // Use the randomness we have.
-        // If we consumed all 4 u32s, we might need new randomness.
-        // But likely we have enough bits left in 'state' if we just need 128 bits for base.
-        
-        // Let's just generate a fresh random 128-bit block for the dense base to be safe and uniform.
-        // Or if we want to be very fast, we use the current 'state' if it hasn't been exhausted.
-        // To be safe and high quality:
-        
-        // Use the original 'state' (the one from key) + 1 (counter mode) or similar?
-        // Let's just encrypt 'state' again.
-        
-        __m128i denseBase = _mm_aesenc_si128(state, mRoundKeys[1]); // Next random
+        // Consume a fresh AES block for the dense-row base after the sparse sample.
+        __m128i denseBase = state;
+        state = aes_encrypt(state, mRoundKeys);
         
         // Ensure non-zero
         // If zero (extremely unlikely), try again.
         while (_mm_test_all_zeros(denseBase, denseBase)) {
-             denseBase = _mm_aesenc_si128(denseBase, mRoundKeys[2]);
+            denseBase = state;
+            state = aes_encrypt(state, mRoundKeys);
         }
 
-        GF128 base;
-        // Hack: access private members or use helper. 
-        // We need to construct GF128 from __m128i.
-        // We can cast.
-        // But GF128 stores as array<uint64_t, 2>.
-        // We can implement a fast constructor or just use fromUint128.
-        
-        uint64_t dLow = _mm_cvtsi128_si64(denseBase);
-        uint64_t dHigh = _mm_extract_epi64(denseBase, 1);
-        base = GF128(dHigh, dLow);
+        const uint64_t dLow = _mm_cvtsi128_si64(denseBase);
+        const uint64_t dHigh = _mm_extract_epi64(denseBase, 1);
+        GF128 base(dHigh, dLow);
 
         // Optimization: Precompute powers? Or just multiply.
         // Since denseCols is small (~40-60), doing 40 muls is okay-ish.
