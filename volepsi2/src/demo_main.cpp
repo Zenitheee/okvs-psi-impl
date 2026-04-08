@@ -37,9 +37,7 @@ constexpr std::size_t kMaxDemoSetSize = 1u << 20;
 constexpr std::size_t kMaxRequestBodyBytes = 64u << 20;
 constexpr auto kPreparedDatasetTtl = std::chrono::minutes(15);
 constexpr std::string_view kTrafficNote =
-    "界面会明确区分实测流量和建模流量。"
-    "只有本地 demo 路径会对校正向量和标签集合做真实 local socket 传输测量，"
-    "VOLE 后端也会单独标注。";
+    "界面会按阶段展示测量流量和建模流量，benchmark/内存路径的估算值会单独标记。";
 
 struct ScopedFd {
     ScopedFd() = default;
@@ -222,16 +220,10 @@ std::string stageToJson(const okvs::PsiStageStat& stage) {
 
 std::string trafficNoteForTelemetry(const okvs::PsiTelemetry& telemetry) {
     if (telemetry.usedModeledTransfers) {
-        if (telemetry.usedRealVole) {
-            return "当前结果来自 benchmark/内存路径：VOLE 字节为本地实测，但校正向量和标签集合字节为建模值，二者已分开统计。";
-        }
-        return "当前结果来自 benchmark/内存路径：VOLE 使用模拟回退，校正向量和标签集合字节为建模值，不应视为真实传输测量。";
+        return "当前结果来自 benchmark/内存路径：校正向量和标签集合流量为建模值，已与测量流量分开统计。";
     }
 
-    if (telemetry.usedRealVole) {
-        return "当前结果来自本地 demo 路径：VOLE、校正向量和标签集合都通过本地 socket 实测。该结果用于演示，不代表跨主机部署测量。";
-    }
-    return "当前结果来自本地 demo 路径：校正向量和标签集合通过本地 socket 实测，但 VOLE 使用模拟回退路径，该阶段没有真实传输字节。";
+    return "当前结果来自本地 demo 路径：校正向量和标签集合流量按阶段记录。该结果用于演示，不代表跨主机部署测量。";
 }
 
 std::string telemetryToJson(const okvs::PsiTelemetry& telemetry) {

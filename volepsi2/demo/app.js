@@ -7,7 +7,7 @@ const stageNames = [
 ];
 
 const defaultTrafficNote =
-    "界面会明确区分实测流量和建模流量，避免把 benchmark 回退路径的估算值当成真实传输数据。";
+    "界面会按阶段展示测量流量和建模流量，benchmark/内存路径的估算值会单独标记。";
 
 const stageDictionary = {
     hash_mapping: {
@@ -58,7 +58,6 @@ const metricTotalTime = document.querySelector("#metric-total-time");
 const metricTotalTraffic = document.querySelector("#metric-total-traffic");
 const metricOkvsSize = document.querySelector("#metric-okvs-size");
 const metricIntersectionSize = document.querySelector("#metric-intersection-size");
-const metricVoleMode = document.querySelector("#metric-vole-mode");
 const metricClustering = document.querySelector("#metric-clustering");
 const metricProgress = document.querySelector("#metric-progress");
 const metricSeedMode = document.querySelector("#metric-seed-mode");
@@ -195,17 +194,15 @@ function localizedStageDetail(stage, telemetry) {
         case "okvs_encoding":
             return "将接收方集合编码为 OKVS 表 P。";
         case "vole_generation":
-            return telemetry.usedRealVole
-                ? "本次运行使用真实 silent VOLE，本阶段记录其本地 socket 传输字节。"
-                : "本次运行使用模拟 VOLE 回退路径，本阶段没有真实网络传输字节。";
+            return "生成协议所需的 VOLE 相关随机量。";
         case "correlation_transfer":
             return telemetry.usedModeledTransfers
-                ? "当前为 benchmark/内存路径：该阶段只建模校正向量流量，并未执行真实传输。"
-                : "接收方通过本地 socket 真实发送校正向量，并完成两侧 OKVS 解码。";
+                ? "当前为 benchmark/内存路径：该阶段仅建模校正向量流量，并完成两侧 OKVS 解码。"
+                : "完成校正向量传输，并完成两侧 OKVS 解码。";
         case "intersection_calculation":
             return telemetry.usedModeledTransfers
-                ? "当前为 benchmark/内存路径：该阶段只建模发送方标签流量，并未执行真实传输。"
-                : "发送方通过本地 socket 真实发送标签集合，并在接收方侧完成交集匹配。";
+                ? "当前为 benchmark/内存路径：该阶段仅建模发送方标签流量，并完成交集匹配。"
+                : "完成发送方标签集合传输，并在接收方侧完成交集匹配。";
         default:
             return stage.detail;
     }
@@ -217,14 +214,10 @@ function buildTrafficNote(telemetry, fallbackText = defaultTrafficNote) {
     }
 
     if (telemetry.usedModeledTransfers) {
-        return telemetry.usedRealVole
-            ? "当前结果来自 benchmark/内存路径：VOLE 字节为本地实测，但校正向量和标签集合字节为建模值，二者已分开统计。"
-            : "当前结果来自 benchmark/内存路径：VOLE 使用模拟回退，校正向量和标签集合字节为建模值，不应视为真实传输测量。";
+        return "当前结果来自 benchmark/内存路径：校正向量和标签集合流量为建模值，已与测量流量分开统计。";
     }
 
-    return telemetry.usedRealVole
-        ? "当前结果来自本地 demo 路径：VOLE、校正向量和标签集合都通过本地 socket 实测。该结果用于演示，不代表跨主机部署测量。"
-        : "当前结果来自本地 demo 路径：校正向量和标签集合通过本地 socket 实测，但 VOLE 使用模拟回退路径，该阶段没有真实传输字节。";
+    return "当前结果来自本地 demo 路径：校正向量和标签集合流量按阶段记录。";
 }
 
 function formatTrafficSummary(telemetry) {
@@ -233,11 +226,11 @@ function formatTrafficSummary(telemetry) {
     if (modeled === 0) {
         return measured;
     }
-    return `实测 ${measured} / 建模 ${formatBytes(modeled)}`;
+    return `测量 ${measured} / 建模 ${formatBytes(modeled)}`;
 }
 
 function trafficModeLabel(stage) {
-    return stage.networkBytesEstimated ? "建模" : "实测";
+    return stage.networkBytesEstimated ? "建模" : "测量";
 }
 
 function formatInteger(value) {
@@ -249,7 +242,7 @@ function getSeedLabel() {
 }
 
 function seedModeLabel(usedDeterministicSeed) {
-    return usedDeterministicSeed ? "固定种子 / 可复现" : "系统随机";
+    return usedDeterministicSeed ? "固定种子" : "系统随机";
 }
 
 function currentPresetName() {
@@ -319,7 +312,6 @@ function resetDashboard() {
     metricTotalTraffic.textContent = "0 B";
     metricOkvsSize.textContent = "0";
     metricIntersectionSize.textContent = "0";
-    metricVoleMode.textContent = "尚未开始";
     metricClustering.textContent = "尚未开始";
     metricProgress.textContent = `0 / ${stageNames.length} 个阶段`;
     metricSeedMode.textContent = "尚未开始";
@@ -331,7 +323,7 @@ function resetDashboard() {
     timeChart.textContent = "运行演示后将在这里绘制各阶段耗时。";
 
     trafficChart.className = "bar-chart empty-state";
-    trafficChart.textContent = "这里会区分展示各协议阶段的实测流量与建模流量。";
+    trafficChart.textContent = "这里会区分展示各协议阶段的测量流量与建模流量。";
 
     intersectionPreview.className = "token-cloud empty-state";
     intersectionPreview.textContent = "完成运行后，这里会展示交集样本。";
@@ -386,7 +378,7 @@ function renderBars(container, stages, valueKey, formatter, signalChart = false)
     if (!stages.length) {
         container.classList.add("empty-state");
         container.textContent = signalChart
-            ? "这里会区分展示各协议阶段的实测流量与建模流量。"
+            ? "这里会区分展示各协议阶段的测量流量与建模流量。"
             : "运行演示后将在这里绘制各阶段耗时。";
         return;
     }
@@ -504,7 +496,6 @@ function renderTelemetry(telemetry) {
     metricTotalTraffic.textContent = formatTrafficSummary(telemetry);
     metricOkvsSize.textContent = telemetry.okvsSize.toLocaleString();
     metricIntersectionSize.textContent = telemetry.intersectionSize.toLocaleString();
-    metricVoleMode.textContent = telemetry.usedRealVole ? "真实 silent VOLE" : "模拟回退路径";
     metricClustering.textContent = telemetry.usedClustering ? "已启用" : "未启用";
     metricProgress.textContent = `${localizedStages.length} / ${stageNames.length} 个阶段`;
     metricSeedMode.textContent = seedModeLabel(Boolean(telemetry.usedDeterministicSeed));

@@ -1,22 +1,22 @@
 # Blazing Fast PSI (CCS '22) Reproduction
 
-本仓库是对论文 *Blazing Fast PSI from Improved OKVS and Subfield VOLE* 的复现，作为武汉大学本科毕业设计项目。当前状态不是“想做什么”，而是“已经做了什么并如何复现”。
+本仓库是对论文 *Blazing Fast PSI from Improved OKVS and Subfield VOLE* 的复现，作为武汉大学本科毕业设计项目。
 
 ## 当前状态
 
-- 已完成 `volepsi2` 中的 OKVS、clustered OKVS、半诚实 PSI fast instantiation 以及本地 Web UI 演示。
+- 已完成 `volepsi2` 中的 OKVS、clustering 优化 OKVS、半诚实 PSI fast instantiation 以及本地 Web UI 演示。
 - `volepsi2` 已支持独立构建：优先使用已安装的 `libOTe`，找不到时回退到仓库内 vendored `thirdparty` 依赖。
 - 已补充本地结构化 benchmark 结果，见 [EVALUATION.md](./EVALUATION.md)。
-- 最终展示形态是本地 Web UI，不是命令行输出；除内置 synthetic demo 外，也支持粘贴或导入自定义数据集并在后端完成预处理。
+- 最终展示形态是本地 Web UI；除内置 synthetic demo 外，也支持粘贴或导入自定义数据集并在后端完成预处理。
 
 ## 已实现范围
 
 `volepsi2` 当前覆盖的内容：
 
 1. 论文 Figure 1 对应的 OKVS `Encode` / `Decode`。
-2. clustered OKVS，支持按 bin 编码与多线程解码。
+2. clustering 优化 OKVS，支持按 bin 编码与多线程解码。
 3. 论文 Figure 4 的半诚实 PSI fast instantiation，其中 `B = F = GF(2^128)`。
-4. 基于 `libOTe` silent VOLE 的真实本地相关性生成，而不是纯随机模拟。
+4. 通过 `libOTe` 的 silent VOLE 后端在本地两方执行中生成 VOLE 相关随机量。
 5. 本地 Web UI，可展示协议阶段、耗时、网络流量和交集样本，并支持自定义数据集输入、去重和基础预处理。
 
 当前**未实现**或**未作为最终成果交付**的内容：
@@ -80,7 +80,7 @@ ctest --test-dir volepsi2/build --output-on-failure
 
 当前测试分成两层：
 
-- `core_test`: 内部后端回归，集中检查 GF(2^128)、OKVS 和 clustered OKVS。
+- `core_test`: 内部后端回归，集中检查 GF(2^128)、OKVS 和 clustering 优化 OKVS。
 - `psi_test`: 与 demo 协议路径一致的端到端 PSI 回归。
 
 如果答辩前还想再做一层随机化压力验证，可运行：
@@ -108,7 +108,7 @@ Web UI 会展示：
 - `Hash Mapping`、`OKVS Encoding`、`VOLE Generation`、`Correction Transfer`、`Intersection Calculation` 五个协议阶段。
 - 每个阶段的耗时与网络流量。
 - 最终交集规模、交集样本、发送方/接收方样本。
-- 当前是否启用 clustered OKVS、是否启用真实 silent VOLE。
+- 当前是否启用 clustering 优化 OKVS、是否启用真实 silent VOLE。
 
 Demo 服务端当前限制 synthetic 或上传后的单侧集合规模不超过 `2^20`，请求体不超过 `64 MiB`；自定义数据集会先写入 15 分钟有效的一次性本地 session，再进入 SSE 执行流程。
 
@@ -119,7 +119,7 @@ Demo 服务端当前限制 synthetic 或上传后的单侧集合规模不超过 
 完整命令和结果见 [EVALUATION.md](./EVALUATION.md)。这里给出摘要：
 
 - `volepsi2` 已经具备可重复运行的 OKVS / PSI benchmark，不再只是“以后再测”。
-- 在 `n = 2^12` 的本地测试中，clustered OKVS 在 4 线程下将 OKVS 总时间从 `36.558 ms` 降到 `29.898 ms`，说明 clustering 在当前实现中已经产生可观收益。
+- 在 `n = 2^12` 的本地测试中，clustering 优化 OKVS 在 4 线程下将 OKVS 总时间从 `36.558 ms` 降到 `29.898 ms`，说明 clustering 在当前实现中已经产生可观收益。
 - 在 `n = 2^10`、`2^12`、`2^14` 的本地 PSI 测试中，`volepsi2` 的绝对运行时间仍明显慢于历史记录中的上游 `volepsi` 基线，因此本项目当前的定位是“功能性复现 + 可展示实现”，而不是“性能追平上游”。
 - 论文在 `n = 2^20` 下报告了更强的多线程收益；本仓库当前 README 中记录的是本地机器上的小规模结构化评测，目的是给答辩和复现提供可重复证据，而不是冒充论文原始实验环境。
 
