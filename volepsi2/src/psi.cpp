@@ -382,13 +382,18 @@ void publishStage(PsiResult& result,
                   Clock::time_point protocolStart,
                   PsiStageStat stage,
                   const PsiTelemetryCallback& onUpdate) {
-    result.telemetry.totalNetworkBytes += stage.networkBytes;
+    if (stage.networkBytesEstimated) {
+        result.telemetry.totalEstimatedNetworkBytes += stage.networkBytes;
+    } else {
+        result.telemetry.totalNetworkBytes += stage.networkBytes;
+    }
     result.telemetry.stages.push_back(std::move(stage));
     result.telemetry.totalDurationMs = elapsedMs(protocolStart, Clock::now());
     result.telemetry.okvsSize = result.okvsSize;
     result.telemetry.intersectionSize = result.intersectionIndices.size();
     result.telemetry.usedClustering = result.usedClustering;
     result.telemetry.usedRealVole = result.usedRealVole;
+    result.telemetry.usedModeledTransfers = result.usedModeledTransfers;
     result.telemetry.usedDeterministicSeed = result.usedDeterministicSeed;
     if (onUpdate) {
         onUpdate(result.telemetry);
@@ -411,6 +416,8 @@ PsiResult SemiHonestPsi::run(std::span<const KeyView> receiverSet,
     PsiResult result;
     result.telemetry.receiverSetSize = receiverSet.size();
     result.telemetry.senderSetSize = senderSet.size();
+    result.usedModeledTransfers = true;
+    result.telemetry.usedModeledTransfers = result.usedModeledTransfers;
     result.usedDeterministicSeed = mConfig.deterministicSeedEnabled;
     result.telemetry.usedDeterministicSeed = result.usedDeterministicSeed;
     const auto protocolStart = Clock::now();
@@ -502,8 +509,8 @@ PsiResult SemiHonestPsi::run(std::span<const KeyView> receiverSet,
                 "vole_generation",
                 "VOLE Generation",
                 vole.usedRealBackend
-                    ? "Measured bytes exchanged on the silent VOLE local socket pair."
-                    : "Used the fallback simulated VOLE backend; no transport bytes were measured.",
+                    ? "Benchmark-style run: measured bytes exchanged on the silent VOLE local socket pair."
+                    : "Benchmark-style run: used the fallback simulated VOLE backend; no transport bytes were measured.",
                 elapsedMs(stageStart, Clock::now()),
                 vole.transportBytes,
                 !vole.usedRealBackend
@@ -535,7 +542,7 @@ PsiResult SemiHonestPsi::run(std::span<const KeyView> receiverSet,
             PsiStageStat{
                 "correlation_transfer",
                 "Correction Transfer",
-                "Modeled the receiver-to-sender correction payload and decoded both OKVS views.",
+                "Benchmark-style in-memory run: modeled the receiver-to-sender correction payload and decoded both OKVS views.",
                 elapsedMs(stageStart, Clock::now()),
                 bytesForFieldElements(result.okvsSize),
                 true
@@ -571,7 +578,7 @@ PsiResult SemiHonestPsi::run(std::span<const KeyView> receiverSet,
             PsiStageStat{
                 "intersection_calculation",
                 "Intersection Calculation",
-                "Modeled the sender tag payload Y' and matched it against receiver tags.",
+                "Benchmark-style in-memory run: modeled the sender tag payload Y' and matched it against receiver tags.",
                 elapsedMs(stageStart, Clock::now()),
                 bytesForFieldElements(senderTags.size()),
                 true
@@ -595,6 +602,8 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
     PsiResult result;
     result.telemetry.receiverSetSize = receiverSet.size();
     result.telemetry.senderSetSize = senderSet.size();
+    result.usedModeledTransfers = false;
+    result.telemetry.usedModeledTransfers = result.usedModeledTransfers;
     result.usedDeterministicSeed = mConfig.deterministicSeedEnabled;
     result.telemetry.usedDeterministicSeed = result.usedDeterministicSeed;
     const auto protocolStart = Clock::now();
@@ -687,8 +696,8 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
                 "vole_generation",
                 "VOLE Generation",
                 vole.usedRealBackend
-                    ? "Measured bytes exchanged on the silent VOLE local socket pair."
-                    : "Used the fallback simulated VOLE backend; no transport bytes were measured.",
+                    ? "Local demo run: measured bytes exchanged on the silent VOLE local socket pair."
+                    : "Local demo run: used the fallback simulated VOLE backend; no transport bytes were measured.",
                 elapsedMs(stageStart, Clock::now()),
                 vole.transportBytes,
                 !vole.usedRealBackend
@@ -788,7 +797,7 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
             PsiStageStat{
                 "correlation_transfer",
                 "Correction Transfer",
-                "Transferred the receiver correction vector over a local socket and decoded both OKVS views.",
+                "Local demo run: transferred the receiver correction vector over a local socket and decoded both OKVS views.",
                 elapsedMs(stageStart, Clock::now()),
                 correctionBytes,
                 false
@@ -876,7 +885,7 @@ PsiResult SemiHonestPsi::runTwoPartyLocal(std::span<const KeyView> receiverSet,
             PsiStageStat{
                 "intersection_calculation",
                 "Intersection Calculation",
-                "Transferred the sender tag set over a local socket and matched it against receiver tags.",
+                "Local demo run: transferred the sender tag set over a local socket and matched it against receiver tags.",
                 elapsedMs(stageStart, Clock::now()),
                 tagBytes,
                 false

@@ -107,6 +107,12 @@ int main() {
     }
     std::cout << "\nPSI VOLE backend: "
               << (psiResult.usedRealVole ? "real" : "simulated");
+    std::cout << "\nPSI transfer mode: "
+              << (psiResult.usedModeledTransfers
+                      ? "benchmark-style fallback (modeled correction/tag transfers)"
+                      : "local socket demo (measured correction/tag transfers)");
+    std::cout << "\nPSI transport bytes: measured=" << psiResult.telemetry.totalNetworkBytes
+              << ", modeled=" << psiResult.telemetry.totalEstimatedNetworkBytes;
     std::cout << "\nPSI intersection values:";
     for (auto idx : psiResult.intersectionIndices) {
         std::cout << ' ' << receiverItems[idx];

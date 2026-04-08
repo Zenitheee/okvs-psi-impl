@@ -108,13 +108,28 @@ bool validateTelemetry(const char* label,
         telemetry.intersectionSize != result.intersectionIndices.size() ||
         telemetry.usedClustering != result.usedClustering ||
         telemetry.usedRealVole != result.usedRealVole ||
+        telemetry.usedModeledTransfers != result.usedModeledTransfers ||
         telemetry.usedDeterministicSeed != result.usedDeterministicSeed) {
         std::cerr << label << " failed: telemetry summary does not match result\n";
         return false;
     }
 
-    if (telemetry.totalNetworkBytes != stageByteSum) {
-        std::cerr << label << " failed: telemetry total network bytes mismatch\n";
+    std::size_t measuredByteSum = 0;
+    std::size_t estimatedByteSum = 0;
+    for (const auto& stage : telemetry.stages) {
+        if (stage.networkBytesEstimated) {
+            estimatedByteSum += stage.networkBytes;
+        } else {
+            measuredByteSum += stage.networkBytes;
+        }
+    }
+
+    if (telemetry.totalNetworkBytes != measuredByteSum) {
+        std::cerr << label << " failed: telemetry measured network bytes mismatch\n";
+        return false;
+    }
+    if (telemetry.totalEstimatedNetworkBytes != estimatedByteSum) {
+        std::cerr << label << " failed: telemetry modeled network bytes mismatch\n";
         return false;
     }
 
@@ -133,6 +148,10 @@ bool validateTelemetry(const char* label,
         std::cerr << label << " failed: unexpected transfer measurement mode\n";
         return false;
     }
+    if (result.usedModeledTransfers != expectEstimatedTransfers) {
+        std::cerr << label << " failed: unexpected top-level modeled transfer flag\n";
+        return false;
+    }
 
     if (telemetry.stages[4].networkBytes != senderSize * sizeof(okvs::GF128)) {
         std::cerr << label << " failed: intersection payload bytes mismatch\n";
@@ -146,6 +165,7 @@ bool validateTelemetry(const char* label,
 
     if (updates.back().stages.size() != telemetry.stages.size() ||
         updates.back().totalNetworkBytes != telemetry.totalNetworkBytes ||
+        updates.back().totalEstimatedNetworkBytes != telemetry.totalEstimatedNetworkBytes ||
         updates.back().intersectionSize != result.intersectionIndices.size()) {
         std::cerr << label << " failed: final progress update does not match result telemetry\n";
         return false;
@@ -207,6 +227,10 @@ bool runCase(const char* label,
 
     if (result.usedDeterministicSeed != config.deterministicSeedEnabled) {
         std::cerr << label << " failed: unexpected seed mode\n";
+        return false;
+    }
+    if (result.usedModeledTransfers != !useLocalSocketFlow) {
+        std::cerr << label << " failed: unexpected modeled-transfer mode\n";
         return false;
     }
 

@@ -25,12 +25,12 @@ __m128i aes_expand(__m128i key) {
     return _mm_xor_si128(key, keygen);
 }
 
-__m128i aes_encrypt(__m128i block, const std::array<__m128i, 11>& roundKeys) {
-    __m128i state = _mm_xor_si128(block, roundKeys[0]);
+__m128i aes_encrypt(__m128i block, const std::array<AesRoundKey, 11>& roundKeys) {
+    __m128i state = _mm_xor_si128(block, roundKeys[0].value);
     for (int i = 1; i < 10; ++i) {
-        state = _mm_aesenc_si128(state, roundKeys[i]);
+        state = _mm_aesenc_si128(state, roundKeys[i].value);
     }
-    return _mm_aesenclast_si128(state, roundKeys[10]);
+    return _mm_aesenclast_si128(state, roundKeys[10].value);
 }
 
 } // namespace
@@ -47,17 +47,17 @@ RowHasher::RowHasher(std::size_t mPrime, std::size_t denseCols, std::size_t weig
     
     // Simple key expansion
     __m128i k = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&key));
-    mRoundKeys[0] = k;
-    mRoundKeys[1] = k = aes_expand<0x01>(k);
-    mRoundKeys[2] = k = aes_expand<0x02>(k);
-    mRoundKeys[3] = k = aes_expand<0x04>(k);
-    mRoundKeys[4] = k = aes_expand<0x08>(k);
-    mRoundKeys[5] = k = aes_expand<0x10>(k);
-    mRoundKeys[6] = k = aes_expand<0x20>(k);
-    mRoundKeys[7] = k = aes_expand<0x40>(k);
-    mRoundKeys[8] = k = aes_expand<0x80>(k);
-    mRoundKeys[9] = k = aes_expand<0x1b>(k);
-    mRoundKeys[10] = k = aes_expand<0x36>(k);
+    mRoundKeys[0].value = k;
+    mRoundKeys[1].value = k = aes_expand<0x01>(k);
+    mRoundKeys[2].value = k = aes_expand<0x02>(k);
+    mRoundKeys[3].value = k = aes_expand<0x04>(k);
+    mRoundKeys[4].value = k = aes_expand<0x08>(k);
+    mRoundKeys[5].value = k = aes_expand<0x10>(k);
+    mRoundKeys[6].value = k = aes_expand<0x20>(k);
+    mRoundKeys[7].value = k = aes_expand<0x40>(k);
+    mRoundKeys[8].value = k = aes_expand<0x80>(k);
+    mRoundKeys[9].value = k = aes_expand<0x1b>(k);
+    mRoundKeys[10].value = k = aes_expand<0x36>(k);
 }
 
 RowData RowHasher::generate(std::span<const std::uint8_t> keyBytes) const {

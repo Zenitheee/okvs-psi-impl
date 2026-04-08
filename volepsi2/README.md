@@ -24,6 +24,8 @@
 
 如果走 vendored 路径，目前仍需要系统可发现的 `libsodium` 开发文件。
 
+如果 vendored 依赖不在默认位置，可用 `-DVOLEPSI2_THIRDPARTY_DIR=/path/to/thirdparty` 指向替代目录。
+
 ### 方式一：使用外部已安装的 libOTe
 
 如果你已经有可用的 `libOTe` 安装前缀，配置时传入 `CMAKE_PREFIX_PATH` 即可：
@@ -55,10 +57,21 @@ cmake -S volepsi2 -B volepsi2/build \
   -DVOLEPSI2_USE_VENDORED_LIBOTE=ON
 ```
 
+如果你想在当前机器上重新开启更激进的本地 CPU 调优，可额外传入：
+
+```bash
+cmake -S volepsi2 -B volepsi2/build \
+  -DVOLEPSI2_USE_NATIVE_ARCH=ON
+```
+
+默认关闭 `-march=native`，便于在不同答辩机器之间迁移构建。
+
+当前 GF(2^128) 与行哈希 fast path 依赖 x86 AES / PCLMUL 指令，`VOLEPSI2_ENABLE_X86_CRYPTO_FLAGS` 默认开启并添加 `-maes -mpclmul`。只有在工具链已经提供等价编译选项，或准备移植这条 fast path 时，才应关闭该选项。
+
 ### 编译
 
 ```bash
-cmake --build volepsi2/build --target core_test psi_test volepsi2_bench volepsi2_demo
+cmake --build volepsi2/build --target core_test psi_test volepsi2_bench volepsi2_demo volepsi2_cli
 ```
 
 ## 生成的主要目标
@@ -80,6 +93,14 @@ ctest --test-dir volepsi2/build --output-on-failure
 1. `core_test` 负责后端基础正确性。
 2. `psi_test` 负责和 Web UI 一致的协议路径。
 
+如果需要额外做一层随机化压力验证：
+
+```bash
+./volepsi2/build/volepsi2_bench stress -t 20 -nt 4 -bs 2048
+```
+
+该模式会在 `n = 2^10`、`2^12`、`2^14` 上重复检查 OKVS round-trip 和 PSI correctness，最新记录见 [../EVALUATION.md](../EVALUATION.md)。
+
 ## 启动 Web UI
 
 ```bash
@@ -96,6 +117,8 @@ Web UI 支持：
 - 展示交集样本、发送方/接收方样本、clustered OKVS 开关状态和 VOLE 后端信息。
 
 说明：demo 采用真实的本地 socket 流程。silent VOLE 阶段仍通过 `coproto::LocalAsyncSocket` 产生本地通信；校正向量和发送方标签也通过本地 socket 传输，因此界面中的流量统计来自真实测量而不是拍脑袋估算。
+
+当前 demo 限制 synthetic 或上传后的单侧集合规模不超过 `2^20`，请求体不超过 `64 MiB`。自定义数据上传后会生成一个 15 分钟有效的一次性本地 session，随后通过 `/api/run` 的 SSE 流执行协议。
 
 ## Benchmark 用法
 

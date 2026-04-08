@@ -19,6 +19,10 @@ struct RowData {
     std::vector<GF128> dense;
 };
 
+struct alignas(16) AesRoundKey {
+    __m128i value;
+};
+
 class RowHasher {
 public:
     RowHasher(std::size_t mPrime, std::size_t denseCols, std::size_t weight, std::uint64_t seed);
@@ -34,9 +38,7 @@ private:
     std::size_t mDenseCols;
     std::size_t mWeight;
     
-    // AES round keys
-    std::array<__m128i, 11> mRoundKeys;
+    std::array<AesRoundKey, 11> mRoundKeys;
 };
 
 } // namespace okvs
-

@@ -427,7 +427,7 @@ body::after {
 
 .meta-strip {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0.8rem;
     margin-bottom: 1rem;
 }
@@ -524,8 +524,12 @@ body::after {
     transition: width 0.45s ease;
 }
 
-.bar-row.signal .bar-fill {
+.bar-row.signal.modeled .bar-fill {
     background: linear-gradient(90deg, var(--signal), var(--signal-soft));
+}
+
+.bar-row.signal.measured .bar-fill {
+    background: linear-gradient(90deg, var(--accent), var(--accent-soft));
 }
 
 .bar-value {

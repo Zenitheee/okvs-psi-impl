@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cmath>
 #include <exception>
+#include <mutex>
 #include <span>
 #include <stdexcept>
 #include <thread>
@@ -130,9 +131,15 @@ std::size_t OkvsEncoder::sparseSize(std::size_t numItems) const {
 }
 
 std::size_t OkvsEncoder::denseSize(std::size_t numItems) const {
+    if (numItems == 0) {
+        return 0;
+    }
     if (mConfig.explicitDenseSize != 0) {
         return mConfig.explicitDenseSize;
     }
+
+    // Keep the compact default dense tail and rely on the exact dense solver to
+    // avoid the prior contiguous-window heuristic failures.
     return mConfig.securityParameter;
 }
 
@@ -217,6 +224,7 @@ void OkvsEncoder::decode(std::span<const KeyView> keys,
 
     std::atomic<std::size_t> next{0};
     std::exception_ptr workerError = nullptr;
+    std::mutex workerErrorMutex;
 
     auto worker = [&]() {
         try {
@@ -228,6 +236,7 @@ void OkvsEncoder::decode(std::span<const KeyView> keys,
                 values[i] = decodeWithHasher(hasher, keys[i], table.data, table.sparseColumns, table.denseColumns);
             }
         } catch (...) {
+            std::scoped_lock lock(workerErrorMutex);
             if (!workerError) {
                 workerError = std::current_exception();
             }

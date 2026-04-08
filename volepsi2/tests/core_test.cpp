@@ -1,6 +1,7 @@
 #include "okvs/binned_encoder.h"
 #include "okvs/encoder.h"
 #include "okvs/input_dataset.h"
+#include "okvs/paxos.h"
 #include "okvs/row_hasher.h"
 
 #include <algorithm>
@@ -123,6 +124,10 @@ bool runOkvsRoundTripCase(std::size_t n) {
         std::cerr << "OKVS sparse table smaller than row weight\n";
         return false;
     }
+    if (table.denseColumns != config.securityParameter) {
+        std::cerr << "OKVS dense width should use the default security-parameter tail\n";
+        return false;
+    }
 
     OkvsEncoder::EncodedTableView tableView{
         std::span<const GF128>(table.data.data(), table.data.size()),
@@ -175,11 +180,11 @@ bool runEmptyOkvsCase() {
         std::cerr << "empty OKVS encode should not allocate sparse columns\n";
         return false;
     }
-    if (table.denseColumns != config.securityParameter) {
+    if (table.denseColumns != 0) {
         std::cerr << "empty OKVS encode dense column count mismatch\n";
         return false;
     }
-    if (table.data.size() != table.denseColumns) {
+    if (!table.data.empty()) {
         std::cerr << "empty OKVS encode table size mismatch\n";
         return false;
     }
@@ -195,6 +200,10 @@ bool runBinnedRoundTripCase() {
 
     if (encoder.numBins() <= 1) {
         std::cerr << "clustered OKVS should use multiple bins in the core test\n";
+        return false;
+    }
+    if (encoder.densePerBin() != config.securityParameter) {
+        std::cerr << "clustered OKVS dense width should use the default security-parameter tail\n";
         return false;
     }
 
@@ -244,6 +253,48 @@ bool runBinnedRoundTripCase() {
             std::cerr << "clustered OKVS single-key decode mismatch at index " << i << '\n';
             return false;
         }
+    }
+
+    std::vector<std::size_t> affectedClusters;
+    affectedClusters.reserve(n);
+    const auto totalSparse = encoder.numBins() * encoder.sparsePerBin();
+    for (std::size_t i = 0; i < n; ++i) {
+        std::size_t changedClusters = 0;
+        std::size_t selectedCluster = encoder.numBins();
+
+        for (std::size_t cluster = 0; cluster < encoder.numBins(); ++cluster) {
+            auto modifiedTable = table;
+            const auto sparseStart = cluster * encoder.sparsePerBin();
+            const auto denseStart = totalSparse + cluster * encoder.densePerBin();
+            std::fill_n(modifiedTable.begin() + static_cast<std::ptrdiff_t>(sparseStart),
+                        static_cast<std::ptrdiff_t>(encoder.sparsePerBin()),
+                        GF128::zero());
+            std::fill_n(modifiedTable.begin() + static_cast<std::ptrdiff_t>(denseStart),
+                        static_cast<std::ptrdiff_t>(encoder.densePerBin()),
+                        GF128::zero());
+
+            const auto decoded = encoder.decode(
+                keyViews[i],
+                std::span<const GF128>(modifiedTable.data(), modifiedTable.size()));
+            if (!(decoded == values[i])) {
+                ++changedClusters;
+                selectedCluster = cluster;
+            }
+        }
+
+        if (changedClusters != 1) {
+            std::cerr << "clustered OKVS row should depend on exactly one cluster, key index "
+                      << i << " changed clusters=" << changedClusters << '\n';
+            return false;
+        }
+        affectedClusters.push_back(selectedCluster);
+    }
+
+    if (std::adjacent_find(affectedClusters.begin(), affectedClusters.end(),
+                           [](std::size_t lhs, std::size_t rhs) { return lhs != rhs; }) ==
+        affectedClusters.end()) {
+        std::cerr << "clustered OKVS test did not exercise multiple clusters\n";
+        return false;
     }
 
     return true;
@@ -350,6 +401,61 @@ bool runRowHasherSparseSamplingCase() {
     return true;
 }
 
+bool runExactDenseGapSolveCase() {
+    okvs::TriangulationInfo tri;
+    tri.gapRows = {
+        okvs::GapRowInfo{0, 0},
+        okvs::GapRowInfo{1, 1}
+    };
+
+    std::vector<okvs::RowData> rows(2);
+    rows[0].dense = {
+        GF128::one(),
+        GF128::zero(),
+        GF128::one()
+    };
+    rows[1].dense = {
+        GF128::zero(),
+        GF128::zero(),
+        GF128::one()
+    };
+
+    okvs::FCInverse fcInv;
+    fcInv.dependencies.resize(2);
+
+    const std::vector<GF128> rhs = {
+        GF128(0, 5),
+        GF128(0, 7)
+    };
+    std::vector<std::size_t> chosenDenseCols;
+    std::vector<GF128> denseSolution(3, GF128::zero());
+    if (!okvs::solveDenseGapSystem(tri, rows, fcInv, 3, rhs, chosenDenseCols, denseSolution)) {
+        std::cerr << "exact dense gap solver should find a full-rank column set\n";
+        return false;
+    }
+
+    const std::vector<std::size_t> expectedCols = {0, 2};
+    if (chosenDenseCols != expectedCols) {
+        std::cerr << "exact dense gap solver selected unexpected pivot columns\n";
+        return false;
+    }
+
+    const GF128 eq0 =
+        rows[0].dense[0] * denseSolution[0] +
+        rows[0].dense[1] * denseSolution[1] +
+        rows[0].dense[2] * denseSolution[2];
+    const GF128 eq1 =
+        rows[1].dense[0] * denseSolution[0] +
+        rows[1].dense[1] * denseSolution[1] +
+        rows[1].dense[2] * denseSolution[2];
+    if (!(eq0 == rhs[0]) || !(eq1 == rhs[1])) {
+        std::cerr << "exact dense gap solver returned an invalid solution\n";
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -374,6 +480,9 @@ int main() {
         return 1;
     }
     if (!runRowHasherSparseSamplingCase()) {
+        return 1;
+    }
+    if (!runExactDenseGapSolveCase()) {
         return 1;
     }
 

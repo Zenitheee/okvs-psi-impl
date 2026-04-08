@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cctype>
 #include <csignal>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -34,10 +35,11 @@ namespace {
 
 constexpr std::size_t kMaxDemoSetSize = 1u << 20;
 constexpr std::size_t kMaxRequestBodyBytes = 64u << 20;
+constexpr auto kPreparedDatasetTtl = std::chrono::minutes(15);
 constexpr std::string_view kTrafficNote =
-    "All protocol traffic is measured from local sockets. Silent VOLE uses the coproto "
-    "local transport, and the correction vector plus sender tags are exchanged over a "
-    "dedicated local socket pair.";
+    "界面会明确区分实测流量和建模流量。"
+    "只有本地 demo 路径会对校正向量和标签集合做真实 local socket 传输测量，"
+    "VOLE 后端也会单独标注。";
 
 struct ScopedFd {
     ScopedFd() = default;
@@ -124,9 +126,24 @@ struct HttpRequest {
     std::string body;
 };
 
+struct PreparedDatasetEntry {
+    okvs::PreparedPsiDataset dataset;
+    std::chrono::steady_clock::time_point expiresAt;
+};
+
 std::mutex gPreparedDatasetMutex;
-std::unordered_map<std::string, okvs::PreparedPsiDataset> gPreparedDatasets;
+std::unordered_map<std::string, PreparedDatasetEntry> gPreparedDatasets;
 std::atomic<std::uint64_t> gPreparedDatasetCounter{1};
+
+void purgeExpiredPreparedDatasets(std::chrono::steady_clock::time_point now) {
+    for (auto iter = gPreparedDatasets.begin(); iter != gPreparedDatasets.end();) {
+        if (iter->second.expiresAt <= now) {
+            iter = gPreparedDatasets.erase(iter);
+        } else {
+            ++iter;
+        }
+    }
+}
 
 std::uint64_t splitMix64(std::uint64_t x) {
     x += 0x9e3779b97f4a7c15ULL;
@@ -203,17 +220,33 @@ std::string stageToJson(const okvs::PsiStageStat& stage) {
     return stream.str();
 }
 
+std::string trafficNoteForTelemetry(const okvs::PsiTelemetry& telemetry) {
+    if (telemetry.usedModeledTransfers) {
+        if (telemetry.usedRealVole) {
+            return "当前结果来自 benchmark/内存路径：VOLE 字节为本地实测，但校正向量和标签集合字节为建模值，二者已分开统计。";
+        }
+        return "当前结果来自 benchmark/内存路径：VOLE 使用模拟回退，校正向量和标签集合字节为建模值，不应视为真实传输测量。";
+    }
+
+    if (telemetry.usedRealVole) {
+        return "当前结果来自本地 demo 路径：VOLE、校正向量和标签集合都通过本地 socket 实测。该结果用于演示，不代表跨主机部署测量。";
+    }
+    return "当前结果来自本地 demo 路径：校正向量和标签集合通过本地 socket 实测，但 VOLE 使用模拟回退路径，该阶段没有真实传输字节。";
+}
+
 std::string telemetryToJson(const okvs::PsiTelemetry& telemetry) {
     std::ostringstream stream;
     stream << '{'
            << "\"totalDurationMs\":" << jsonDouble(telemetry.totalDurationMs) << ','
            << "\"totalNetworkBytes\":" << telemetry.totalNetworkBytes << ','
+           << "\"totalEstimatedNetworkBytes\":" << telemetry.totalEstimatedNetworkBytes << ','
            << "\"receiverSetSize\":" << telemetry.receiverSetSize << ','
            << "\"senderSetSize\":" << telemetry.senderSetSize << ','
            << "\"okvsSize\":" << telemetry.okvsSize << ','
            << "\"intersectionSize\":" << telemetry.intersectionSize << ','
            << "\"usedClustering\":" << jsonBool(telemetry.usedClustering) << ','
            << "\"usedRealVole\":" << jsonBool(telemetry.usedRealVole) << ','
+           << "\"usedModeledTransfers\":" << jsonBool(telemetry.usedModeledTransfers) << ','
            << "\"usedDeterministicSeed\":" << jsonBool(telemetry.usedDeterministicSeed) << ','
            << "\"stages\":[";
 
@@ -261,6 +294,7 @@ std::string progressPayloadToJson(const okvs::PsiTelemetry& telemetry) {
     std::ostringstream stream;
     stream << '{'
            << "\"telemetry\":" << telemetryToJson(telemetry) << ','
+           << "\"trafficNote\":" << jsonString(trafficNoteForTelemetry(telemetry)) << ','
            << "\"latestStage\":";
 
     if (telemetry.stages.empty()) {
@@ -333,8 +367,9 @@ std::string resultPayloadToJson(const DemoRequest& request,
            << "\"seed\":" << request.seed << ','
            << "\"usedClustering\":" << jsonBool(result.usedClustering) << ','
            << "\"usedRealVole\":" << jsonBool(result.usedRealVole) << ','
+           << "\"usedModeledTransfers\":" << jsonBool(result.usedModeledTransfers) << ','
            << "\"usedDeterministicSeed\":" << jsonBool(result.usedDeterministicSeed) << ','
-           << "\"trafficNote\":" << jsonString(kTrafficNote) << ','
+           << "\"trafficNote\":" << jsonString(trafficNoteForTelemetry(result.telemetry)) << ','
            << "\"datasetSummary\":" << datasetSummaryToJson(resolved) << ','
            << "\"receiverPreview\":" << stringArrayToJson(receiverPreview) << ','
            << "\"senderPreview\":" << stringArrayToJson(senderPreview) << ','
@@ -354,6 +389,7 @@ std::string readyPayloadToJson(const DemoRequest& request, const ResolvedDataset
            << "\"numThreads\":" << request.numThreads << ','
            << "\"binSizeHint\":" << request.binSizeHint << ','
            << "\"seed\":" << request.seed << ','
+           << "\"usedDeterministicSeed\":true,"
            << "\"datasetSummary\":" << datasetSummaryToJson(resolved) << ','
            << "\"trafficNote\":" << jsonString(kTrafficNote)
            << '}';
@@ -699,11 +735,13 @@ ResolvedDataset resolveDataset(DemoRequest& request) {
     okvs::PreparedPsiDataset prepared;
     {
         std::scoped_lock lock(gPreparedDatasetMutex);
+        purgeExpiredPreparedDatasets(std::chrono::steady_clock::now());
         const auto iter = gPreparedDatasets.find(request.sessionToken);
         if (iter == gPreparedDatasets.end()) {
-            throw std::runtime_error("The uploaded dataset session was not found or has expired.");
+            throw std::runtime_error("The uploaded dataset session was not found, has expired, or was already used.");
         }
-        prepared = iter->second;
+        prepared = std::move(iter->second.dataset);
+        gPreparedDatasets.erase(iter);
     }
 
     resolved.dataset.receiverItems = std::move(prepared.receiverItems);
@@ -772,7 +810,7 @@ void handleDatasetSessionRequest(int fd, const HttpRequest& request) {
     const auto form = parseParameterString(request.body);
     const auto receiverText = requireParameter("receiverText", form);
     const auto senderText = requireParameter("senderText", form);
-    const auto prepared = okvs::preparePsiDataset(receiverText, senderText);
+    auto prepared = okvs::preparePsiDataset(receiverText, senderText);
 
     if (prepared.receiverItems.empty() && prepared.senderItems.empty()) {
         throw std::runtime_error("Both uploaded datasets are empty after preprocessing.");
@@ -785,7 +823,11 @@ void handleDatasetSessionRequest(int fd, const HttpRequest& request) {
     const auto body = sessionPayloadToJson(token, prepared);
     {
         std::scoped_lock lock(gPreparedDatasetMutex);
-        gPreparedDatasets.emplace(token, prepared);
+        const auto now = std::chrono::steady_clock::now();
+        purgeExpiredPreparedDatasets(now);
+        gPreparedDatasets.emplace(
+            token,
+            PreparedDatasetEntry{std::move(prepared), now + kPreparedDatasetTtl});
     }
 
     sendResponse(fd, "200 OK", "application/json; charset=utf-8", body);

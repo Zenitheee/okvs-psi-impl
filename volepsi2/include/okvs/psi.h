@@ -32,12 +32,14 @@ struct PsiTelemetry {
     std::vector<PsiStageStat> stages;
     double totalDurationMs = 0.0;
     std::size_t totalNetworkBytes = 0;
+    std::size_t totalEstimatedNetworkBytes = 0;
     std::size_t receiverSetSize = 0;
     std::size_t senderSetSize = 0;
     std::size_t okvsSize = 0;
     std::size_t intersectionSize = 0;
     bool usedClustering = false;
     bool usedRealVole = false;
+    bool usedModeledTransfers = false;
     bool usedDeterministicSeed = false;
 };
 
@@ -49,6 +51,7 @@ struct PsiResult {
     std::size_t okvsSize = 0;
     bool usedClustering = false;
     bool usedRealVole = false;
+    bool usedModeledTransfers = false;
     bool usedDeterministicSeed = false;
     PsiTelemetry telemetry;
 };

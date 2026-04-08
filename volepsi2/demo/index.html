@@ -196,6 +196,10 @@
                         <span class="meta-label">进度</span>
                         <strong id="metric-progress">0 / 5 个阶段</strong>
                     </div>
+                    <div>
+                        <span class="meta-label">种子模式</span>
+                        <strong id="metric-seed-mode">尚未开始</strong>
+                    </div>
                 </div>
 
                 <div id="stage-feed" class="stage-feed empty-state">
@@ -225,7 +229,7 @@
                     </div>
                 </div>
                 <div id="traffic-chart" class="bar-chart empty-state">
-                    这里会显示各协议阶段在本地 socket 上的真实流量。
+                    这里会区分展示各协议阶段的实测流量与建模流量。
                 </div>
             </article>
         </section>
@@ -269,7 +273,7 @@
 
         <footer class="panel footnote-panel">
             <p id="traffic-note">
-                所有协议流量都来自真实本地 socket 传输，不再使用后两阶段的估算值。
+                界面会明确区分实测流量和建模流量，避免把 benchmark 回退路径的估算值当成真实传输数据。
             </p>
         </footer>
     </main>

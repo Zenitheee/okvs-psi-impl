@@ -2,9 +2,7 @@
 
 #include <algorithm>
 #include <limits>
-#include <numeric>
 #include <queue>
-#include <random>
 #include <set>
 #include <stdexcept>
 
@@ -13,56 +11,66 @@ namespace {
 
 constexpr std::size_t kInvalidIndex = std::numeric_limits<std::size_t>::max();
 
-bool gaussianEliminate(std::vector<std::vector<GF128>>& matrix, std::vector<GF128>& rhs) {
-    const std::size_t n = matrix.size();
-    if (n == 0) {
+bool solveFullRowRankSystem(std::vector<std::vector<GF128>>& matrix,
+                            std::vector<GF128>& rhs,
+                            std::vector<std::size_t>& pivotColumns) {
+    const std::size_t rows = matrix.size();
+    if (rows == 0) {
+        pivotColumns.clear();
         return true;
     }
+    const std::size_t cols = matrix.front().size();
+    pivotColumns.clear();
+    pivotColumns.reserve(rows);
 
-    for (std::size_t pivot = 0; pivot < n; ++pivot) {
-        std::size_t pivotRow = pivot;
-        while (pivotRow < n && matrix[pivotRow][pivot].isZero()) {
-            ++pivotRow;
+    std::size_t pivotRow = 0;
+    for (std::size_t col = 0; col < cols && pivotRow < rows; ++col) {
+        std::size_t candidate = pivotRow;
+        while (candidate < rows && matrix[candidate][col].isZero()) {
+            ++candidate;
         }
 
-        if (pivotRow == n) {
-            return false;
+        if (candidate == rows) {
+            continue;
         }
 
-        if (pivotRow != pivot) {
-            std::swap(matrix[pivotRow], matrix[pivot]);
-            std::swap(rhs[pivotRow], rhs[pivot]);
+        if (candidate != pivotRow) {
+            std::swap(matrix[candidate], matrix[pivotRow]);
+            std::swap(rhs[candidate], rhs[pivotRow]);
         }
 
-        GF128 diag = matrix[pivot][pivot];
+        GF128 diag = matrix[pivotRow][col];
         if (diag.isZero()) {
             return false;
         }
 
-        GF128 inv = diag.inverse();
+        const GF128 inv = diag.inverse();
         if (!(inv == GF128::one())) {
-            for (auto& entry : matrix[pivot]) {
-                entry *= inv;
+            for (std::size_t j = col; j < cols; ++j) {
+                matrix[pivotRow][j] *= inv;
             }
-            rhs[pivot] *= inv;
+            rhs[pivotRow] *= inv;
         }
 
-        for (std::size_t row = 0; row < n; ++row) {
-            if (row == pivot) {
+        for (std::size_t row = 0; row < rows; ++row) {
+            if (row == pivotRow) {
                 continue;
             }
-            GF128 factor = matrix[row][pivot];
+            const GF128 factor = matrix[row][col];
             if (factor.isZero()) {
                 continue;
             }
-            for (std::size_t col = 0; col < n; ++col) {
-                matrix[row][col] -= factor * matrix[pivot][col];
+            for (std::size_t j = col; j < cols; ++j) {
+                matrix[row][j] -= factor * matrix[pivotRow][j];
             }
-            rhs[row] -= factor * rhs[pivot];
+            rhs[row] -= factor * rhs[pivotRow];
         }
+
+        pivotColumns.push_back(col);
+        ++pivotRow;
     }
 
-    return true;
+    return pivotRow == rows;
 }
 
 std::vector<std::vector<GF128>> buildCombinedDense(const TriangulationInfo& tri,
@@ -92,31 +100,6 @@ std::vector<std::vector<GF128>> buildCombinedDense(const TriangulationInfo& tri,
     }
 
     return combined;
-}
-
-bool trySolveWithColumns(const std::vector<std::vector<GF128>>& combined,
-                         const std::vector<GF128>& rhs,
-                         const std::vector<std::size_t>& columns,
-                         std::vector<GF128>& denseSolution,
-                         std::vector<std::size_t>& chosenDenseCols) {
-    const std::size_t g = columns.size();
-    std::vector<std::vector<GF128>> matrix(g, std::vector<GF128>(g, GF128::zero()));
-    for (std::size_t i = 0; i < g; ++i) {
-        for (std::size_t j = 0; j < g; ++j) {
-            matrix[i][j] = combined[i][columns[j]];
-        }
-    }
-    auto rhsCopy = rhs;
-    if (!gaussianEliminate(matrix, rhsCopy)) {
-        return false;
-    }
-
-    denseSolution.assign(denseSolution.size(), GF128::zero());
-    for (std::size_t j = 0; j < g; ++j) {
-        denseSolution[columns[j]] = rhsCopy[j];
-    }
-    chosenDenseCols = columns;
-    return true;
 }
 
 } // namespace
@@ -363,33 +346,17 @@ bool solveDenseGapSystem(const TriangulationInfo& tri,
     }
 
     auto combined = buildCombinedDense(tri, rows, fcInv, denseColumns);
+    auto rhsCopy = rhs;
+    if (!solveFullRowRankSystem(combined, rhsCopy, chosenDenseCols)) {
+        denseSolution.assign(denseColumns, GF128::zero());
+        return false;
+    }
+
     denseSolution.assign(denseColumns, GF128::zero());
-
-    std::vector<std::size_t> columns(g);
-    for (std::size_t offset = 0; offset + g <= denseColumns; ++offset) {
-        for (std::size_t j = 0; j < g; ++j) {
-            columns[j] = offset + j;
-        }
-        if (trySolveWithColumns(combined, rhs, columns, denseSolution, chosenDenseCols)) {
-            return true;
-        }
+    for (std::size_t row = 0; row < g; ++row) {
+        denseSolution[chosenDenseCols[row]] = rhsCopy[row];
     }
-
-    std::vector<std::size_t> allIndices(denseColumns);
-    std::iota(allIndices.begin(), allIndices.end(), 0);
-    std::mt19937_64 rng(0x9c39'5ad4'cafebabeULL);
-    for (int attempt = 0; attempt < 16; ++attempt) {
-        std::shuffle(allIndices.begin(), allIndices.end(), rng);
-        std::copy(allIndices.begin(), allIndices.begin() + g, columns.begin());
-        std::sort(columns.begin(), columns.end());
-        if (trySolveWithColumns(combined, rhs, columns, denseSolution, chosenDenseCols)) {
-            return true;
-        }
-    }
-
-    return false;
+    return true;
 }
 
 } // namespace okvs
-
-

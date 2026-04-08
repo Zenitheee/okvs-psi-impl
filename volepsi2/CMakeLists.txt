@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 project(volepsi2 LANGUAGES CXX)
 
 option(VOLEPSI2_USE_VENDORED_LIBOTE "Force the vendored thirdparty/libOTe fallback." OFF)
+option(VOLEPSI2_USE_NATIVE_ARCH "Enable -march=native for maximum local performance at the cost of portability." OFF)
+option(VOLEPSI2_ENABLE_X86_CRYPTO_FLAGS "Enable x86 AES/PCLMUL compile flags required by the current GF128 fast path." ON)
 set(VOLEPSI2_THIRDPARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty" CACHE PATH
     "Path to vendored third-party dependencies used when libOTe is not installed externally.")
 
@@ -68,7 +70,14 @@ target_include_directories(volepsi2 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(volepsi2 PUBLIC oc::libOTe)
 target_compile_features(volepsi2 PUBLIC cxx_std_20)
 target_compile_definitions(volepsi2 PUBLIC OKVS_ENABLE_REAL_VOLE=1)
-target_compile_options(volepsi2 PRIVATE -march=native -maes -mpclmul)
+
+if(VOLEPSI2_ENABLE_X86_CRYPTO_FLAGS)
+    target_compile_options(volepsi2 PRIVATE -maes -mpclmul)
+endif()
+
+if(VOLEPSI2_USE_NATIVE_ARCH)
+    target_compile_options(volepsi2 PRIVATE -march=native)
+endif()
 
 add_executable(volepsi2_cli src/main.cpp)
 target_link_libraries(volepsi2_cli PRIVATE volepsi2)

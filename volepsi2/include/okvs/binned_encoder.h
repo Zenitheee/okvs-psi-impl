@@ -38,6 +38,11 @@ private:
     static std::size_t computeItemsPerBin(std::size_t numItems, std::size_t numBins, std::size_t ssp);
     static std::uint64_t hashKey(KeyView key, std::uint64_t seed);
 
+    [[nodiscard]] std::size_t clusterForKey(KeyView key) const;
+    [[nodiscard]] std::size_t sparseOffset(std::size_t cluster) const;
+    [[nodiscard]] std::size_t denseBaseOffset() const;
+    [[nodiscard]] std::size_t denseOffset(std::size_t cluster) const;
+
     OkvsConfig mConfig;
     std::uint64_t mSeed = 0;
     std::size_t mNumItems = 0;
@@ -45,8 +50,10 @@ private:
     std::size_t mItemsPerBin = 0;
     std::size_t mSparsePerBin = 0;
     std::size_t mDensePerBin = 0;
-    std::size_t mSizePerBin = 0;
-    OkvsEncoder mBinEncoder;
+    std::size_t mTotalSparseSize = 0;
+    std::size_t mTotalDenseSize = 0;
+    std::size_t mClusterTableSize = 0;
+    OkvsEncoder mClusterEncoder;
 };
 
 } // namespace okvs

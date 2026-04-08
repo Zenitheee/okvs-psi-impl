@@ -39,11 +39,23 @@
 
 `volepsi2` 会先尝试 `find_package(libOTe)`。如果你已经安装了 `libOTe`，可通过 `CMAKE_PREFIX_PATH` 或 `libOTe_DIR` 指向它；如果没有，CMake 会自动回退到仓库内 vendored 的 `thirdparty/libOTe`、`thirdparty/coproto`、`thirdparty/macoro` 和 `thirdparty/function2`。
 
+如果 vendored 依赖不在默认位置，可用 `-DVOLEPSI2_THIRDPARTY_DIR=/path/to/thirdparty` 指向替代目录。
+
 如果你想强制始终使用 vendored 路径：
 
 ```bash
 cmake -S volepsi2 -B volepsi2/build -DVOLEPSI2_USE_VENDORED_LIBOTE=ON
 ```
+
+如果你要在当前机器上重新开启更激进的本地 CPU 调优，可以额外传入：
+
+```bash
+cmake -S volepsi2 -B volepsi2/build -DVOLEPSI2_USE_NATIVE_ARCH=ON
+```
+
+默认关闭 `-march=native`，这样把仓库拿到另一台答辩机器上时更容易直接重建。
+
+当前 GF(2^128) 与行哈希 fast path 使用 x86 AES / PCLMUL 指令，`VOLEPSI2_ENABLE_X86_CRYPTO_FLAGS` 默认开启并自动添加 `-maes -mpclmul`。只有在工具链已经提供等价编译选项，或准备移植这条 fast path 时，才应关闭该选项。
 
 如果你想显式使用外部已安装的 `libOTe`：
 
@@ -55,7 +67,7 @@ cmake -S volepsi2 -B volepsi2/build \
 然后编译：
 
 ```bash
-cmake --build volepsi2/build --target core_test psi_test volepsi2_bench volepsi2_demo
+cmake --build volepsi2/build --target core_test psi_test volepsi2_bench volepsi2_demo volepsi2_cli
 ```
 
 说明：vendored 路径当前仍需要系统可发现的 `libsodium` 开发文件。
@@ -70,6 +82,14 @@ ctest --test-dir volepsi2/build --output-on-failure
 
 - `core_test`: 内部后端回归，集中检查 GF(2^128)、OKVS 和 clustered OKVS。
 - `psi_test`: 与 demo 协议路径一致的端到端 PSI 回归。
+
+如果答辩前还想再做一层随机化压力验证，可运行：
+
+```bash
+./volepsi2/build/volepsi2_bench stress -t 20 -nt 4 -bs 2048
+```
+
+该模式会在 `n = 2^10`、`2^12`、`2^14` 上重复检查 OKVS round-trip 和 PSI correctness，已记录结果见 [EVALUATION.md](./EVALUATION.md)。
 
 ### 3. 启动最终展示用的 Web UI
 
@@ -90,6 +110,8 @@ Web UI 会展示：
 - 最终交集规模、交集样本、发送方/接收方样本。
 - 当前是否启用 clustered OKVS、是否启用真实 silent VOLE。
 
+Demo 服务端当前限制 synthetic 或上传后的单侧集合规模不超过 `2^20`，请求体不超过 `64 MiB`；自定义数据集会先写入 15 分钟有效的一次性本地 session，再进入 SSE 执行流程。
+
 这部分是最终答辩时最直接的演示界面。
 
 ## 本地结构化评测结论
@@ -97,7 +119,7 @@ Web UI 会展示：
 完整命令和结果见 [EVALUATION.md](./EVALUATION.md)。这里给出摘要：
 
 - `volepsi2` 已经具备可重复运行的 OKVS / PSI benchmark，不再只是“以后再测”。
-- 在 `n = 2^12` 的本地测试中，clustered OKVS 在 4 线程下将 OKVS 总时间从 `80.365 ms` 降到 `61.795 ms`，说明 clustering 在当前实现中已经产生可观收益。
+- 在 `n = 2^12` 的本地测试中，clustered OKVS 在 4 线程下将 OKVS 总时间从 `36.558 ms` 降到 `29.898 ms`，说明 clustering 在当前实现中已经产生可观收益。
 - 在 `n = 2^10`、`2^12`、`2^14` 的本地 PSI 测试中，`volepsi2` 的绝对运行时间仍明显慢于历史记录中的上游 `volepsi` 基线，因此本项目当前的定位是“功能性复现 + 可展示实现”，而不是“性能追平上游”。
 - 论文在 `n = 2^20` 下报告了更强的多线程收益；本仓库当前 README 中记录的是本地机器上的小规模结构化评测，目的是给答辩和复现提供可重复证据，而不是冒充论文原始实验环境。
 
